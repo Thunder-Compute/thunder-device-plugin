@@ -1,0 +1,155 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: {{ include "thunder-device-plugin.fullname" . | quote }}
+  namespace: {{ .Values.namespace.name | quote }}
+  labels:
+    {{- include "thunder-device-plugin.labels" . | nindent 4 }}
+    app.kubernetes.io/component: daemon
+spec:
+  selector:
+    matchLabels:
+      {{- include "thunder-device-plugin.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "thunder-device-plugin.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "thunder-device-plugin.fullname" . | quote }}
+      hostPID: true
+      containers:
+        - name: daemon
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            privileged: true
+            runAsUser: 0
+          env:
+            - name: NODE
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            {{- with .Values.node.zone }}
+            - name: ZONE
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.node.externalIP }}
+            - name: EXTERNAL_IP
+              value: {{ . | quote }}
+            {{- end }}
+            - name: NODE_ZONE_LABEL
+              value: {{ .Values.node.zoneLabel | quote }}
+            - name: NODE_EXTERNAL_IP_LABEL
+              value: {{ .Values.node.externalIPLabel | quote }}
+            - name: MIN_DRIVER_VERSION
+              value: {{ .Values.nvidia.minDriverVersion | quote }}
+            - name: HOST_ROOT
+              value: {{ .Values.hostRoot | quote }}
+            - name: HOST_TARGET_PID
+              value: {{ .Values.hostTargetPID | quote }}
+            - name: DRA_ENABLED
+              value: {{ .Values.dra.enabled | quote }}
+            - name: DRA_DRIVER_NAME
+              value: {{ .Values.dra.driverName | quote }}
+            - name: THUNDER_CLIENT_NAMESPACE
+              value: {{ .Values.dra.thunderClientNamespace | quote }}
+            - name: KUBELET_PLUGIN_DIR
+              value: {{ .Values.dra.kubeletPluginDir | quote }}
+            - name: KUBELET_REGISTRAR_DIR
+              value: {{ .Values.dra.kubeletRegistrarDir | quote }}
+            - name: CDI_SPEC_DIR
+              value: {{ .Values.cdi.specDir | quote }}
+            - name: LIBCUDA_PATH
+              value: {{ .Values.nvidia.libcudaPath | quote }}
+            - name: LIBNVIDIA_ML_PATH
+              value: {{ .Values.nvidia.libnvidiaMLPath | quote }}
+            - name: NVIDIA_SMI_PATH
+              value: {{ .Values.nvidia.nvidiaSMIPath | quote }}
+            - name: THUNDER_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "thunder-device-plugin.secretName" . | quote }}
+                  key: {{ .Values.thunder.apiTokenKey | quote }}
+            - name: THUNDER_API_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "thunder-device-plugin.secretName" . | quote }}
+                  key: {{ .Values.thunder.apiURLKey | quote }}
+                  optional: true
+          volumeMounts:
+            - name: host-root
+              mountPath: {{ .Values.hostRoot | quote }}
+              readOnly: true
+              mountPropagation: HostToContainer
+            - name: kubelet-plugin-dir
+              mountPath: {{ .Values.dra.kubeletPluginDir | quote }}
+              mountPropagation: Bidirectional
+            - name: kubelet-registrar-dir
+              mountPath: {{ .Values.dra.kubeletRegistrarDir | quote }}
+            - name: cdi-spec-dir
+              mountPath: {{ .Values.cdi.specDir | quote }}
+          {{- with .Values.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      volumes:
+        - name: host-root
+          hostPath:
+            path: /
+            type: Directory
+        - name: kubelet-plugin-dir
+          hostPath:
+            path: {{ .Values.dra.kubeletPluginDir | quote }}
+            type: DirectoryOrCreate
+        - name: kubelet-registrar-dir
+          hostPath:
+            path: {{ .Values.dra.kubeletRegistrarDir | quote }}
+            type: Directory
+        - name: cdi-spec-dir
+          hostPath:
+            path: {{ .Values.cdi.specDir | quote }}
+            type: DirectoryOrCreate
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: {{ .Values.node.zoneLabel | quote }}
+                    operator: Exists
+                  - key: {{ .Values.node.externalIPLabel | quote }}
+                    operator: Exists
+                  - key: {{ .Values.nodeLabelKeys.thunderNode | quote }}
+                    operator: In
+                    values:
+                      - "true"
+        {{- with .Values.affinity }}
+        {{- with .nodeAffinity }}
+        {{- with .preferredDuringSchedulingIgnoredDuringExecution }}
+          preferredDuringSchedulingIgnoredDuringExecution:
+            {{- toYaml . | nindent 12 }}
+        {{- end }}
+        {{- end }}
+        {{- with .podAffinity }}
+        podAffinity:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
+        {{- with .podAntiAffinity }}
+        podAntiAffinity:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

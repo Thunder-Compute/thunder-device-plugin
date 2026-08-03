@@ -1,0 +1,70 @@
+{{- if .Values.operator.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ printf "%s-operator" (include "thunder-device-plugin.fullname" .) | trunc 63 | trimSuffix "-" | quote }}
+  namespace: {{ .Values.namespace.name | quote }}
+  labels:
+    {{- include "thunder-device-plugin.labels" . | nindent 4 }}
+    app.kubernetes.io/component: operator
+spec:
+  replicas: {{ .Values.operator.replicas }}
+  selector:
+    matchLabels:
+      {{- include "thunder-device-plugin.operatorSelectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "thunder-device-plugin.operatorSelectorLabels" . | nindent 8 }}
+        {{- with .Values.operator.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.operator.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "thunder-device-plugin.fullname" . | quote }}
+      containers:
+        - name: operator
+          image: "{{ .Values.operator.image.repository }}:{{ .Values.operator.image.tag }}"
+          imagePullPolicy: {{ .Values.operator.image.pullPolicy }}
+          env:
+            - name: DRA_DRIVER_NAME
+              value: {{ .Values.operator.driverName | quote }}
+            - name: RESOURCE_SLICE_NAME_PREFIX
+              value: {{ .Values.operator.resourceSliceNamePrefix | quote }}
+            - name: NODE_ZONE_LABEL
+              value: {{ .Values.node.zoneLabel | quote }}
+            - name: RECONCILE_INTERVAL
+              value: {{ .Values.operator.reconcileInterval | quote }}
+            - name: VALID_GPU_COUNTS
+              value: {{ join "," .Values.operator.validGPUCounts | quote }}
+            - name: THUNDER_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "thunder-device-plugin.secretName" . | quote }}
+                  key: {{ .Values.thunder.apiTokenKey | quote }}
+            - name: THUNDER_API_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "thunder-device-plugin.secretName" . | quote }}
+                  key: {{ .Values.thunder.apiURLKey | quote }}
+                  optional: true
+          {{- with .Values.operator.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      {{- with .Values.operator.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.operator.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.operator.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

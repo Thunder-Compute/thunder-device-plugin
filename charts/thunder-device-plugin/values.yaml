@@ -1,0 +1,90 @@
+namespace:
+  create: true
+  name: thunder-system
+
+image:
+  repository: thundercompute/thunder-device-plugin-daemon
+  tag: latest
+  pullPolicy: IfNotPresent
+
+operator:
+  enabled: true
+  replicas: 1
+  image:
+    repository: thundercompute/thunder-dra-operator
+    tag: latest
+    pullPolicy: IfNotPresent
+  driverName: vgpu.thundercompute.com
+  resourceSliceNamePrefix: thunder
+  reconcileInterval: 60s
+  validGPUCounts:
+    - "1"
+    - "2"
+    - "4"
+    - "8"
+  podAnnotations: {}
+  podLabels: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  resources: {}
+
+thunder:
+  # Prefer passing this with --set-file or an external secrets flow.
+  apiToken: ""
+  apiURL: "https://api.thundercompute.com:2096"
+  # Set this to reuse a pre-created Secret in thunder-system.
+  existingSecret: ""
+  secretName: thunder-api
+  apiTokenKey: THUNDER_API_TOKEN
+  apiURLKey: THUNDER_API_URL
+
+node:
+  # Kubernetes node name is injected from spec.nodeName. Zone and externalIP are
+  # optional env overrides; when empty, the daemon reads the current Node labels.
+  zone: ""
+  externalIP: ""
+  zoneLabel: topology.kubernetes.io/zone
+  externalIPLabel: thundercompute.com/external-ip
+
+nvidia:
+  minDriverVersion: "535.104.05"
+  libcudaPath: /usr/lib/x86_64-linux-gnu/libcuda.so.1
+  libnvidiaMLPath: /usr/lib/x86_64-linux-gnu/libnvidia-ml.so.1
+  nvidiaSMIPath: /usr/bin/nvidia-smi
+
+hostRoot: /host
+hostTargetPID: "1"
+
+dra:
+  enabled: true
+  driverName: vgpu.thundercompute.com
+  thunderClientNamespace: thunder-system
+  kubeletPluginDir: /var/lib/kubelet/plugins/vgpu.thundercompute.com
+  kubeletRegistrarDir: /var/lib/kubelet/plugins_registry
+
+cdi:
+  specDir: /var/run/cdi
+
+nodeSelector:
+  thundercompute.com/node: "true"
+  nvidia.com/gpu.present: "true"
+
+nodeLabelKeys:
+  externalIP: thundercompute.com/external-ip
+  thunderNode: thundercompute.com/node
+  thunderReady: thundercompute.com/node-ready
+  thunderGPUCount: thundercompute.com/gpu-count
+  thunderDriverVersion: thundercompute.com/gpu-driver-version
+  zone: topology.kubernetes.io/zone
+  nvidiaGPUPresent: nvidia.com/gpu.present
+  nvidiaGPUCount: nvidia.com/gpu.count
+  nvidiaGPUProduct: nvidia.com/gpu.product
+
+tolerations: []
+affinity: {}
+
+podAnnotations: {}
+podLabels: {}
+
+resources: {}
