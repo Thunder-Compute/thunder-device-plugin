@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"path/filepath"
 	"strings"
 
 	thunder "thunder-device-plugin/pkg/thunder-sdk"
@@ -94,6 +95,7 @@ func startDRAPlugin(ctx context.Context, cfg Config, thunderClient *thunder.Clie
 		return fmt.Errorf("build dynamic kubernetes client for DRA plugin: %w", err)
 	}
 	cdiStore := NewFileCDIDeviceStore(cfg.CDISpecDir)
+	cdiStore.StateDir = filepath.Join(cfg.KubeletPluginDir, "cdi-state")
 	cdiStore.LibCUDAPath = cfg.LibCUDAPath
 	cdiStore.LibNVMLPath = cfg.LibNVMLPath
 	cdiStore.NVSMIPath = cfg.NVSMIPath

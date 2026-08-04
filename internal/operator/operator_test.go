@@ -45,7 +45,7 @@ func TestBuildDesiredPoolsUsesMaxHostAndClientCapacity(t *testing.T) {
 		zones: []thunder.Zone{{ZoneID: "zone-1", DisplayName: "us-west-2a"}},
 		nodes: map[string][]thunder.Node{
 			"zone-1": {
-				{GPUType: "A6000", GPUCount: 10, Status: "online"},
+				{GPUType: "A6000", GPUCount: 10, Status: "active"},
 				{GPUType: "A6000", GPUCount: 99, Status: "offline"},
 			},
 		},

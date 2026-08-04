@@ -26,9 +26,9 @@ const (
 	DefaultThunderClientNamespace = "thunder-system"
 	DefaultCDIKind                = "vgpu.thundercompute.com/vgpu"
 
-	GPUTypeAttributeName = "vgpu.thundercompute.com/gpu-type"
+	GPUTypeAttributeName = "vgpu.thundercompute.com/gpu_type"
 	ZoneAttributeName    = "vgpu.thundercompute.com/zone"
-	GPUCountCapacityName = "vgpu.thundercompute.com/gpu-count"
+	GPUCountCapacityName = "vgpu.thundercompute.com/gpu_count"
 )
 
 var ErrNotFound = errors.New("not found")

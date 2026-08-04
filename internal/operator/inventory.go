@@ -105,7 +105,7 @@ func buildDesiredPools(ctx context.Context, inventory InventorySource) (map[pool
 
 func nodeHealthy(status string) bool {
 	status = strings.TrimSpace(strings.ToLower(status))
-	return status == "" || status == "online" || status == "ready" || status == "healthy"
+	return status == "" || status == "active" || status == "online" || status == "ready" || status == "healthy"
 }
 
 func addGPUCount(counts map[string]int64, gpuType string, count int64) {

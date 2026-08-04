@@ -17,8 +17,8 @@ const (
 	resourceInventoryComponent = "resource-inventory"
 	driverAppName              = "thunder-dra-driver"
 	zoneAttributeName          = "vgpu.thundercompute.com/zone"
-	gpuTypeAttributeName       = "vgpu.thundercompute.com/gpu-type"
-	gpuCountCapacityName       = "vgpu.thundercompute.com/gpu-count"
+	gpuTypeAttributeName       = "vgpu.thundercompute.com/gpu_type"
+	gpuCountCapacityName       = "vgpu.thundercompute.com/gpu_count"
 )
 
 var invalidDNSLabelRun = regexp.MustCompile(`[^a-z0-9-]+`)
@@ -47,7 +47,7 @@ func buildResourceSlice(cfg Config, definition poolDefinition, generation int64)
 				"app.kubernetes.io/component":             resourceInventoryComponent,
 				"app.kubernetes.io/managed-by":            "thunder-dra-operator",
 				"vgpu.thundercompute.com/zone":            zoneLabel,
-				"vgpu.thundercompute.com/gpu-type":        gpuLabel,
+				"vgpu.thundercompute.com/gpu_type":        gpuLabel,
 				"vgpu.thundercompute.com/host-capacity":   fmt.Sprint(definition.HostCapacity),
 				"vgpu.thundercompute.com/client-capacity": fmt.Sprint(definition.ClientCapacity),
 			},

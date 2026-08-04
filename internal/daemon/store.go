@@ -209,13 +209,17 @@ func stringFromMap(values map[string]any, key string) string {
 	return ""
 }
 
-const ThunderEnrollmentTokenEnv = "THUNDER_ENROLLMENT_TOKEN"
+const (
+	ThunderEnrollmentTokenEnv      = "THUNDER_ENROLLMENT_TOKEN"
+	ThunderClientInstallCommandEnv = "THUNDER_CLIENT_INSTALL_COMMAND"
+)
 
 const cdiHookTimeoutSeconds = 300
 
 type FileCDIDeviceStore struct {
-	SpecDir string
-	Kind    string
+	SpecDir  string
+	StateDir string
+	Kind     string
 
 	LibCUDAPath          string
 	LibNVMLPath          string
@@ -242,17 +246,6 @@ func (s *FileCDIDeviceStore) Create(ctx context.Context, allocation Allocation, 
 	if err := os.MkdirAll(stateDir, 0700); err != nil {
 		return "", err
 	}
-	tokenPath := s.tokenPath(deviceName)
-	if err := os.WriteFile(tokenPath, []byte(token), 0600); err != nil {
-		_ = os.RemoveAll(stateDir)
-		return "", err
-	}
-	hookPath := s.hookPath(deviceName)
-	if err := os.WriteFile(hookPath, []byte(s.hookScript(tokenPath)), 0700); err != nil {
-		_ = os.RemoveAll(stateDir)
-		return "", err
-	}
-
 	spec := map[string]any{
 		"cdiVersion": "0.6.0",
 		"kind":       kind,
@@ -260,17 +253,8 @@ func (s *FileCDIDeviceStore) Create(ctx context.Context, allocation Allocation, 
 			{
 				"name": deviceName,
 				"containerEdits": map[string]any{
-					"env":    s.containerEnv(qualifiedName, allocation),
+					"env":    s.containerEnv(qualifiedName, allocation, token),
 					"mounts": s.mounts(),
-					"hooks": []map[string]any{
-						{
-							"hookName": "createContainer",
-							"path":     hookPath,
-							"args":     []string{hookPath},
-							"env":      s.hookEnv(allocation),
-							"timeout":  cdiHookTimeoutSeconds,
-						},
-					},
 				},
 			},
 		},
@@ -319,6 +303,13 @@ func (s *FileCDIDeviceStore) specDir() string {
 	return strings.TrimSpace(s.SpecDir)
 }
 
+func (s *FileCDIDeviceStore) stateRoot() string {
+	if strings.TrimSpace(s.StateDir) != "" {
+		return strings.TrimSpace(s.StateDir)
+	}
+	return filepath.Join(s.specDir(), "thunder")
+}
+
 func (s *FileCDIDeviceStore) kind() string {
 	if strings.TrimSpace(s.Kind) == "" {
 		return DefaultCDIKind
@@ -353,7 +344,7 @@ func (s *FileCDIDeviceStore) specPath(qualifiedName string) string {
 }
 
 func (s *FileCDIDeviceStore) stateDir(deviceName string) string {
-	return filepath.Join(s.specDir(), "thunder", deviceName)
+	return filepath.Join(s.stateRoot(), deviceName)
 }
 
 func (s *FileCDIDeviceStore) tokenPath(deviceName string) string {
@@ -381,14 +372,17 @@ export %s
 `, shellQuote(tokenPath), ThunderEnrollmentTokenEnv, ThunderEnrollmentTokenEnv, strings.TrimSpace(s.ClientInstallCommand))
 }
 
-func (s *FileCDIDeviceStore) containerEnv(qualifiedName string, allocation Allocation) []string {
+func (s *FileCDIDeviceStore) containerEnv(qualifiedName string, allocation Allocation, token string) []string {
 	env := []string{
+		ThunderEnrollmentTokenEnv + "=" + token,
+		ThunderClientInstallCommandEnv + "=" + strings.TrimSpace(s.ClientInstallCommand),
 		"THUNDER_RESOURCE_CLAIM_UID=" + string(allocation.ClaimUID),
 		"THUNDER_RESOURCE_CLAIM_NAMESPACE=" + allocation.ClaimNamespace,
 		"THUNDER_RESOURCE_CLAIM_NAME=" + allocation.ClaimName,
 		"THUNDER_GPU_TYPE=" + allocation.GPUType,
 		"THUNDER_GPU_COUNT=" + fmt.Sprint(allocation.GPUCount),
 		"THUNDER_CDI_DEVICE=" + qualifiedName,
+		"LD_PRELOAD=/etc/thunder/libthunder.so",
 	}
 	pathDirs := uniqueNonEmpty([]string{
 		filepath.Dir(s.nvidiaSMIPath()),
@@ -412,8 +406,9 @@ func (s *FileCDIDeviceStore) containerEnv(qualifiedName string, allocation Alloc
 	return env
 }
 
-func (s *FileCDIDeviceStore) hookEnv(allocation Allocation) []string {
+func (s *FileCDIDeviceStore) hookEnv(allocation Allocation, token string) []string {
 	return []string{
+		ThunderEnrollmentTokenEnv + "=" + token,
 		"THUNDER_RESOURCE_CLAIM_UID=" + string(allocation.ClaimUID),
 		"THUNDER_RESOURCE_CLAIM_NAMESPACE=" + allocation.ClaimNamespace,
 		"THUNDER_RESOURCE_CLAIM_NAME=" + allocation.ClaimName,
