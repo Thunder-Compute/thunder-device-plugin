@@ -1,0 +1,24 @@
+apiVersion: resource.k8s.io/v1
+kind: ResourceClaimTemplate
+metadata:
+  name: {{ include "thunder-vgpu-test-pod.fullname" . | quote }}
+  labels:
+    {{- include "thunder-vgpu-test-pod.labels" . | nindent 4 }}
+spec:
+  metadata:
+    labels:
+      {{- include "thunder-vgpu-test-pod.labels" . | nindent 6 }}
+  spec:
+    devices:
+      requests:
+        - name: {{ .Values.requestName | quote }}
+          exactly:
+            deviceClassName: {{ .Values.deviceClassName | quote }}
+            selectors:
+              - cel:
+                  expression: {{ printf "device.attributes[%q][\"gpu_type\"] == %q" .Values.driverName .Values.gpu.type | quote }}
+            allocationMode: ExactCount
+            count: 1
+            capacity:
+              requests:
+                {{ .Values.driverName }}/gpu_count: {{ .Values.gpu.count | quote }}

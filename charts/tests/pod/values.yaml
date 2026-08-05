@@ -1,0 +1,44 @@
+driverName: vgpu.thundercompute.com
+deviceClassName: thunder-vgpu
+
+gpu:
+  type: A6000
+  count: "1"
+
+requestName: gpu
+claimName: vgpu
+
+image:
+  repository: ubuntu
+  tag: "22.04"
+  pullPolicy: IfNotPresent
+
+restartPolicy: Never
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+podAnnotations: {}
+podLabels: {}
+
+resources:
+  limits: {}
+  requests: {}
+
+command:
+  - /bin/sh
+  - -lc
+args:
+  - |
+    set -eux
+    echo "Thunder vGPU DRA pod started"
+    echo "PATH=${PATH:-}"
+    echo "LD_LIBRARY_PATH=${LD_LIBRARY_PATH:-}"
+    echo "THUNDER_RESOURCE_CLAIM_UID=${THUNDER_RESOURCE_CLAIM_UID:-}"
+    echo "THUNDER_GPU_TYPE=${THUNDER_GPU_TYPE:-}"
+    echo "THUNDER_GPU_COUNT=${THUNDER_GPU_COUNT:-}"
+    command -v nvidia-smi
+    nvidia-smi || true
+    find /usr /lib -name 'libcuda.so*' -o -name 'libnvidia-ml.so*' 2>/dev/null | sort || true
+    sleep infinity

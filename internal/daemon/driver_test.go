@@ -31,6 +31,7 @@ func TestPrepareResourceClaimsMintsTokenCreatesClientAndReturnsCDI(t *testing.T)
 		Tokens:     tokens,
 		Clients:    clients,
 		CDI:        cdi,
+		Guest:      &memoryGuestStore{},
 	}
 
 	result, err := driver.PrepareResourceClaims(ctx, []*resourcev1.ResourceClaim{claim})
@@ -64,6 +65,9 @@ func TestPrepareResourceClaimsMintsTokenCreatesClientAndReturnsCDI(t *testing.T)
 	if client.EnrollmentTokenID != "token-id-1" || client.CDIName == "" {
 		t.Fatalf("ThunderClient = %#v", client)
 	}
+	if client.GuestNamespace != "default" || client.GuestConfigMap != "claim-a-thunder-configmap" || client.GuestSecret != "claim-a-thunder-secret" {
+		t.Fatalf("ThunderClient guest artifacts = %#v", client)
+	}
 	if client.NodeName != "node-a" || client.Consumer.Namespace != "default" || client.Consumer.Name != "pod-a" {
 		t.Fatalf("ThunderClient scheduling data = %#v", client)
 	}
@@ -80,6 +84,7 @@ func TestPrepareResourceClaimsIsIdempotent(t *testing.T) {
 		Tokens:     &fakeTokenIssuer{},
 		Clients:    newMemoryClientStore(),
 		CDI:        &memoryCDIStore{},
+		Guest:      &memoryGuestStore{},
 	}
 
 	first, err := driver.PrepareResourceClaims(ctx, []*resourcev1.ResourceClaim{claim})
@@ -106,12 +111,16 @@ func TestUnprepareResourceClaimsRevokesTokenAndDeletesClient(t *testing.T) {
 		ClaimName:         "claim-a",
 		EnrollmentTokenID: "token-id-1",
 		CDIName:           "vgpu.thundercompute.com/vgpu=claim-11111111-1111-1111-1111-111111111111",
+		GuestNamespace:    "default",
+		GuestConfigMap:    "claim-a-thunder-configmap",
+		GuestSecret:       "claim-a-thunder-secret",
 	}); err != nil {
 		t.Fatal(err)
 	}
 	tokens := &fakeTokenIssuer{}
 	cdi := &memoryCDIStore{created: map[string]bool{"vgpu.thundercompute.com/vgpu=claim-11111111-1111-1111-1111-111111111111": true}}
-	driver := &Driver{Tokens: tokens, Clients: clients, CDI: cdi}
+	guest := &memoryGuestStore{created: map[string]bool{"default/claim-a-thunder-configmap": true, "default/claim-a-thunder-secret": true}}
+	driver := &Driver{Tokens: tokens, Clients: clients, CDI: cdi, Guest: guest}
 
 	result, err := driver.UnprepareResourceClaims(ctx, []kubeletplugin.NamespacedObject{{NamespacedName: types.NamespacedName{Namespace: "default", Name: "claim-a"}, UID: claimUID}})
 	if err != nil {
@@ -128,6 +137,9 @@ func TestUnprepareResourceClaimsRevokesTokenAndDeletesClient(t *testing.T) {
 	}
 	if cdi.created["vgpu.thundercompute.com/vgpu=claim-11111111-1111-1111-1111-111111111111"] {
 		t.Fatalf("CDI device still exists")
+	}
+	if guest.created["default/claim-a-thunder-configmap"] || guest.created["default/claim-a-thunder-secret"] {
+		t.Fatalf("guest artifacts still exist: %#v", guest.created)
 	}
 }
 
@@ -247,6 +259,39 @@ func (s *memoryCDIStore) Remove(ctx context.Context, qualifiedName string) error
 	}
 	if s.created != nil {
 		delete(s.created, qualifiedName)
+	}
+	return nil
+}
+
+type memoryGuestStore struct {
+	created map[string]bool
+	err     error
+}
+
+func (s *memoryGuestStore) Create(ctx context.Context, allocation Allocation, token string, installCommand string) (GuestArtifacts, error) {
+	if s.err != nil {
+		return GuestArtifacts{}, s.err
+	}
+	if s.created == nil {
+		s.created = map[string]bool{}
+	}
+	artifacts := GuestArtifacts{
+		Namespace:     allocation.ClaimNamespace,
+		ConfigMapName: ThunderGuestConfigMapName(allocation.ClaimName),
+		SecretName:    ThunderGuestSecretName(allocation.ClaimName),
+	}
+	s.created[artifacts.Namespace+"/"+artifacts.ConfigMapName] = true
+	s.created[artifacts.Namespace+"/"+artifacts.SecretName] = true
+	return artifacts, nil
+}
+
+func (s *memoryGuestStore) Remove(ctx context.Context, artifacts GuestArtifacts) error {
+	if s.err != nil {
+		return s.err
+	}
+	if s.created != nil {
+		delete(s.created, artifacts.Namespace+"/"+artifacts.ConfigMapName)
+		delete(s.created, artifacts.Namespace+"/"+artifacts.SecretName)
 	}
 	return nil
 }

@@ -1,0 +1,102 @@
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: {{ include "thunder-vgpu-test-vm.fullname" . | quote }}
+  labels:
+    {{- include "thunder-vgpu-test-vm.labels" . | nindent 4 }}
+    {{- with .Values.vmLabels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- with .Values.vmAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  running: {{ .Values.running }}
+  dataVolumeTemplates:
+    - metadata:
+        name: {{ include "thunder-vgpu-test-vm.rootDiskName" . | quote }}
+        labels:
+          {{- include "thunder-vgpu-test-vm.labels" . | nindent 10 }}
+      spec:
+        source:
+          http:
+            url: {{ .Values.dataVolume.url | quote }}
+        pvc:
+          accessModes:
+            {{- toYaml .Values.dataVolume.accessModes | nindent 12 }}
+          volumeMode: {{ .Values.dataVolume.volumeMode | quote }}
+          {{- with .Values.dataVolume.storageClassName }}
+          storageClassName: {{ . | quote }}
+          {{- end }}
+          resources:
+            requests:
+              storage: {{ .Values.dataVolume.storage | quote }}
+  template:
+    metadata:
+      labels:
+        {{- include "thunder-vgpu-test-vm.labels" . | nindent 8 }}
+    spec:
+      resourceClaims:
+        - name: {{ .Values.claimName | quote }}
+          resourceClaimName: {{ include "thunder-vgpu-test-vm.claimName" . | quote }}
+      domain:
+        resources:
+          requests:
+            memory: {{ .Values.vm.memory | quote }}
+        cpu:
+          cores: {{ .Values.vm.cpuCores }}
+        devices:
+          gpus:
+            - name: {{ .Values.gpu.name | quote }}
+              claimName: {{ .Values.claimName | quote }}
+              requestName: {{ .Values.requestName | quote }}
+          disks:
+            - name: {{ include "thunder-vgpu-test-vm.rootDiskName" . | quote }}
+              disk:
+                bus: virtio
+            - name: cloudinitdisk
+              disk:
+                bus: virtio
+          filesystems:
+            - name: thunder-config
+              virtiofs: {}
+            - name: thunder-secret
+              virtiofs: {}
+          {{- if .Values.network.enabled }}
+          interfaces:
+            - name: default
+              masquerade: {}
+          {{- end }}
+      {{- if .Values.network.enabled }}
+      networks:
+        - name: default
+          pod: {}
+      {{- end }}
+      volumes:
+        - name: {{ include "thunder-vgpu-test-vm.rootDiskName" . | quote }}
+          dataVolume:
+            name: {{ include "thunder-vgpu-test-vm.rootDiskName" . | quote }}
+        - name: cloudinitdisk
+          cloudInitNoCloud:
+            userData: {{ .Values.cloudInit.userData | quote }}
+        - name: thunder-config
+          configMap:
+            name: {{ include "thunder-vgpu-test-vm.guestConfigMapName" . | quote }}
+            optional: true
+        - name: thunder-secret
+          secret:
+            secretName: {{ include "thunder-vgpu-test-vm.guestSecretName" . | quote }}
+            optional: true
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

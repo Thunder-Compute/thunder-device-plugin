@@ -4,9 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"strings"
 	"testing"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/kubernetes/fake"
 )
 
 func TestFileCDIDeviceStoreCreateWritesMountsEnvAndHook(t *testing.T) {
@@ -118,4 +121,70 @@ func stringSliceContains(values []string, want string) bool {
 		}
 	}
 	return false
+}
+
+func TestKubernetesGuestConfigStoreCreateWritesConfigMapAndSecret(t *testing.T) {
+	ctx := context.Background()
+	kube := fake.NewSimpleClientset()
+	store := NewKubernetesGuestConfigStore(kube)
+	allocation := Allocation{
+		ClaimUID:       types.UID("11111111-1111-1111-1111-111111111111"),
+		ClaimNamespace: "default",
+		ClaimName:      "claim-a",
+		GPUType:        "A6000",
+		GPUCount:       2,
+	}
+
+	artifacts, err := store.Create(ctx, allocation, "raw-token-value", `echo install "${THUNDER_ENROLLMENT_TOKEN}"`)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if artifacts.Namespace != "default" || artifacts.ConfigMapName != "claim-a-thunder-configmap" || artifacts.SecretName != "claim-a-thunder-secret" {
+		t.Fatalf("artifacts = %#v", artifacts)
+	}
+
+	configMap, err := kube.CoreV1().ConfigMaps("default").Get(ctx, artifacts.ConfigMapName, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("get ConfigMap: %v", err)
+	}
+	script := configMap.Data[ThunderGuestInstallScriptKey]
+	for _, want := range []string{
+		"cuda-keyring_1.1-1_all.deb",
+		"nvidia-driver-pinning-610.43.02",
+		"cuda-drivers",
+		`echo install "${THUNDER_ENROLLMENT_TOKEN}"`,
+	} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("script missing %q:\n%s", want, script)
+		}
+	}
+	if strings.Contains(script, "raw-token-value") {
+		t.Fatalf("script contains raw token: %s", script)
+	}
+
+	secret, err := kube.CoreV1().Secrets("default").Get(ctx, artifacts.SecretName, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("get Secret: %v", err)
+	}
+	if got := string(secret.Data[ThunderGuestSecretTokenKey]); got != "raw-token-value" {
+		t.Fatalf("secret token = %q", got)
+	}
+
+	if _, err := store.Create(ctx, allocation, "new-token-value", `echo updated`); err != nil {
+		t.Fatalf("second Create: %v", err)
+	}
+	secret, err = kube.CoreV1().Secrets("default").Get(ctx, artifacts.SecretName, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("get updated Secret: %v", err)
+	}
+	if got := string(secret.Data[ThunderGuestSecretTokenKey]); got != "new-token-value" {
+		t.Fatalf("updated secret token = %q", got)
+	}
+
+	if err := store.Remove(ctx, artifacts); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	if err := store.Remove(ctx, artifacts); err != nil {
+		t.Fatalf("idempotent Remove: %v", err)
+	}
 }

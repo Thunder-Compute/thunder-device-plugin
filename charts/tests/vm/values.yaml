@@ -1,0 +1,50 @@
+driverName: vgpu.thundercompute.com
+deviceClassName: thunder-vgpu
+
+gpu:
+  type: A6000
+  count: "1"
+  name: thunder-vgpu0
+
+requestName: gpu
+claimName: vgpu
+
+running: true
+
+vm:
+  memory: 1Gi
+  cpuCores: 1
+
+dataVolume:
+  # Leave empty to use a release-scoped name.
+  name: ""
+  url: https://cloud-images.ubuntu.com/noble/20260518/noble-server-cloudimg-amd64.img
+  storage: 20Gi
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: ""
+  volumeMode: Filesystem
+
+network:
+  enabled: true
+
+cloudInit:
+  userData: |
+    #cloud-config
+    password: thunder
+    chpasswd: { expire: False }
+    ssh_pwauth: True
+    packages:
+      - qemu-guest-agent
+    runcmd:
+      - [ systemctl, enable, --now, qemu-guest-agent ]
+      - [ sh, -lc, 'mkdir -p /mnt/thunder-config /mnt/thunder-secret' ]
+      - [ sh, -lc, 'for i in $(seq 1 60); do mountpoint -q /mnt/thunder-config || mount -t virtiofs thunder-config /mnt/thunder-config || true; mountpoint -q /mnt/thunder-secret || mount -t virtiofs thunder-secret /mnt/thunder-secret || true; if [ -f /mnt/thunder-config/install-thunder-client.sh ] && [ -s /mnt/thunder-secret/enrollment-token ]; then bash /mnt/thunder-config/install-thunder-client.sh; exit 0; fi; sleep 5; done; echo Thunder guest artifacts unavailable >&2; exit 1' ]
+      - [ sh, -lc, 'nvidia-smi || true' ]
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+vmAnnotations: {}
+vmLabels: {}

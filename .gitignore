@@ -1,3 +1,5 @@
 cli/
 *.md
 !README.md
+.build/
+scripts/

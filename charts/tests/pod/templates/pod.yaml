@@ -1,0 +1,50 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ include "thunder-vgpu-test-pod.fullname" . | quote }}
+  labels:
+    {{- include "thunder-vgpu-test-pod.labels" . | nindent 4 }}
+    {{- with .Values.podLabels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- with .Values.podAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  restartPolicy: {{ .Values.restartPolicy | quote }}
+  resourceClaims:
+    - name: {{ .Values.claimName | quote }}
+      resourceClaimTemplateName: {{ include "thunder-vgpu-test-pod.fullname" . | quote }}
+  containers:
+    - name: tester
+      image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+      imagePullPolicy: {{ .Values.image.pullPolicy }}
+      command:
+        {{- toYaml .Values.command | nindent 8 }}
+      args:
+        {{- toYaml .Values.args | nindent 8 }}
+      resources:
+        claims:
+          - name: {{ .Values.claimName | quote }}
+            request: {{ .Values.requestName | quote }}
+        {{- with .Values.resources.limits }}
+        limits:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
+        {{- with .Values.resources.requests }}
+        requests:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
+  {{- with .Values.nodeSelector }}
+  nodeSelector:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  {{- with .Values.tolerations }}
+  tolerations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  {{- with .Values.affinity }}
+  affinity:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}

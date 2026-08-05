@@ -113,6 +113,7 @@ func startDRAPlugin(ctx context.Context, cfg Config, thunderClient *thunder.Clie
 		},
 		Clients: NewKubernetesThunderClientStore(dynamicClient, cfg.ThunderClientNS),
 		CDI:     cdiStore,
+		Guest:   NewKubernetesGuestConfigStore(kube),
 	}
 	_, err = StartNodePlugin(ctx, driver, kube, PluginConfig{
 		DriverName:       cfg.DRADriverName,

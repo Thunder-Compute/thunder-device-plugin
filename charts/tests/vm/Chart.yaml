@@ -1,0 +1,6 @@
+apiVersion: v2
+name: thunder-vgpu-test-vm
+description: Test KubeVirt VM requesting Thunder vGPU resources through Kubernetes DRA.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

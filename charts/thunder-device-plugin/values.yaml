@@ -19,9 +19,9 @@ operator:
   reconcileInterval: 60s
   validGPUCounts:
     - "1"
-    - "2"
-    - "4"
-    - "8"
+    # - "2"
+    # - "4"
+    # - "8"
   podAnnotations: {}
   podLabels: {}
   nodeSelector: {}
@@ -62,6 +62,10 @@ dra:
   thunderClientNamespace: thunder-system
   kubeletPluginDir: /var/lib/kubelet/plugins/vgpu.thundercompute.com
   kubeletRegistrarDir: /var/lib/kubelet/plugins_registry
+
+deviceClass:
+  enabled: true
+  name: thunder-vgpu
 
 cdi:
   specDir: /var/run/cdi

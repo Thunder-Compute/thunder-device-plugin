@@ -76,6 +76,9 @@ type ThunderClient struct {
 
 	CDIName           string
 	EnrollmentTokenID string
+	GuestNamespace    string
+	GuestConfigMap    string
+	GuestSecret       string
 	CreatedAt         time.Time
 	UpdatedAt         time.Time
 }
@@ -96,6 +99,17 @@ type CDIDeviceStore interface {
 	Remove(ctx context.Context, qualifiedName string) error
 }
 
+type GuestArtifacts struct {
+	Namespace     string
+	ConfigMapName string
+	SecretName    string
+}
+
+type GuestConfigStore interface {
+	Create(ctx context.Context, allocation Allocation, token string, installCommand string) (GuestArtifacts, error)
+	Remove(ctx context.Context, artifacts GuestArtifacts) error
+}
+
 type Driver struct {
 	DriverName string
 	NodeName   string
@@ -103,6 +117,7 @@ type Driver struct {
 	Tokens     TokenIssuer
 	Clients    ThunderClientStore
 	CDI        CDIDeviceStore
+	Guest      GuestConfigStore
 	Logger     *slog.Logger
 }
 
@@ -152,8 +167,15 @@ func (d *Driver) prepareOne(ctx context.Context, claim *resourcev1.ResourceClaim
 		return nil, fmt.Errorf("mint client enrollment token: %w", err)
 	}
 
+	guestArtifacts, err := d.Guest.Create(ctx, allocation, token, d.CDIInstallCommand())
+	if err != nil {
+		_ = d.Tokens.Revoke(ctx, tokenID)
+		return nil, fmt.Errorf("create guest Thunder artifacts: %w", err)
+	}
+
 	cdiName, err := d.CDI.Create(ctx, allocation, token)
 	if err != nil {
+		_ = d.Guest.Remove(ctx, guestArtifacts)
 		_ = d.Tokens.Revoke(ctx, tokenID)
 		return nil, fmt.Errorf("create CDI device: %w", err)
 	}
@@ -161,8 +183,12 @@ func (d *Driver) prepareOne(ctx context.Context, claim *resourcev1.ResourceClaim
 	client := thunderClientFromAllocation(allocation)
 	client.CDIName = cdiName
 	client.EnrollmentTokenID = tokenID
+	client.GuestNamespace = guestArtifacts.Namespace
+	client.GuestConfigMap = guestArtifacts.ConfigMapName
+	client.GuestSecret = guestArtifacts.SecretName
 	if err := d.Clients.Upsert(ctx, client); err != nil {
 		_ = d.CDI.Remove(ctx, cdiName)
+		_ = d.Guest.Remove(ctx, guestArtifacts)
 		_ = d.Tokens.Revoke(ctx, tokenID)
 		return nil, fmt.Errorf("upsert ThunderClient: %w", err)
 	}
@@ -196,6 +222,14 @@ func (d *Driver) unprepareOne(ctx context.Context, claim kubeletplugin.Namespace
 		if err := d.CDI.Remove(ctx, client.CDIName); err != nil {
 			return fmt.Errorf("remove CDI device %q: %w", client.CDIName, err)
 		}
+	}
+
+	if err := d.Guest.Remove(ctx, GuestArtifacts{
+		Namespace:     firstNonEmpty(client.GuestNamespace, client.ClaimNamespace, claim.Namespace),
+		ConfigMapName: client.GuestConfigMap,
+		SecretName:    client.GuestSecret,
+	}); err != nil {
+		return fmt.Errorf("remove guest Thunder artifacts: %w", err)
 	}
 
 	if err := d.Clients.Delete(ctx, claim.UID); err != nil && !errors.Is(err, ErrNotFound) {
@@ -297,7 +331,17 @@ func (d *Driver) validateStoresOnly() error {
 	if d.CDI == nil {
 		return errors.New("CDI device store is required")
 	}
+	if d.Guest == nil {
+		return errors.New("guest config store is required")
+	}
 	return nil
+}
+
+func (d *Driver) CDIInstallCommand() string {
+	if store, ok := d.CDI.(*FileCDIDeviceStore); ok {
+		return store.ClientInstallCommand
+	}
+	return ""
 }
 
 func (d *Driver) driverName() string {
@@ -362,6 +406,15 @@ func stringAttribute(device *resourcev1.Device, name string) string {
 		return ""
 	}
 	return strings.TrimSpace(*attribute.StringValue)
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
 }
 
 func Quantity(value int64) apiresource.Quantity {
