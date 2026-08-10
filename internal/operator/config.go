@@ -3,7 +3,6 @@ package operator
 import (
 	"fmt"
 	"os"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -12,10 +11,6 @@ const (
 	DefaultDriverName   = "thundercompute.com"
 	DefaultNamePrefix   = "thunder"
 	DefaultZoneLabelKey = "topology.kubernetes.io/zone"
-
-	// DefaultSharesPerGPU publishes one exclusive claim per GPU. Raising it
-	// oversubscribes each GPU to that many concurrent clients.
-	DefaultSharesPerGPU = 1
 
 	// DefaultDeviceClassPrefix and DefaultExtendedResourcePrefix name the
 	// per-GPU-type DeviceClasses the operator generates, so a workload can ask
@@ -29,9 +24,6 @@ type Config struct {
 	NamePrefix        string
 	ZoneLabelKey      string
 	ReconcileInterval time.Duration
-	// SharesPerGPU is how many clients may share one GPU. 1 keeps every GPU
-	// exclusive and publishes no consumable capacity at all.
-	SharesPerGPU int64
 	// DeviceClassPrefix and ExtendedResourcePrefix name the per-GPU-type
 	// DeviceClasses. An empty ExtendedResourcePrefix disables them.
 	DeviceClassPrefix      string
@@ -44,22 +36,10 @@ func ConfigFromEnv() (Config, error) {
 		NamePrefix:        envOrDefault("RESOURCE_SLICE_NAME_PREFIX", DefaultNamePrefix),
 		ZoneLabelKey:      envOrDefault("NODE_ZONE_LABEL", DefaultZoneLabelKey),
 		ReconcileInterval: 60 * time.Second,
-		SharesPerGPU:      DefaultSharesPerGPU,
 		DeviceClassPrefix: envOrDefault("DEVICE_CLASS_PREFIX", DefaultDeviceClassPrefix),
 		// Explicitly empty disables per-GPU-type classes, so only look at the
 		// default when the variable is unset.
 		ExtendedResourcePrefix: envOrDefaultAllowEmpty("EXTENDED_RESOURCE_PREFIX", DefaultExtendedResourcePrefix),
-	}
-
-	if raw := os.Getenv("SHARES_PER_GPU"); raw != "" {
-		shares, err := strconv.ParseInt(raw, 10, 64)
-		if err != nil {
-			return Config{}, fmt.Errorf("parse SHARES_PER_GPU: %w", err)
-		}
-		if shares < 1 {
-			return Config{}, fmt.Errorf("SHARES_PER_GPU must be at least 1, got %d", shares)
-		}
-		cfg.SharesPerGPU = shares
 	}
 
 	if raw := os.Getenv("RECONCILE_INTERVAL"); raw != "" {

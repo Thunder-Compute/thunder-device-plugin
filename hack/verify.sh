@@ -79,22 +79,25 @@ verify_charts() {
   check_not_contains "no manifest calls a resource a vgpu" "vgpu" "${all}"
   check_not_contains "no manifest uses external-ip" "external-ip" "${all}"
   check_contains "driver name is ${DRIVER_NAME}" "${DRIVER_NAME}" "${main_manifest}"
-  check_contains "DeviceClass is ${DEVICE_CLASS_NAME}" "name: \"${DEVICE_CLASS_NAME}\"" "${main_manifest}"
   check_contains "kubelet plugin dir is driver-scoped" "/var/lib/kubelet/plugins/${DRIVER_NAME}" "${main_manifest}"
   # One device per GPU, so a claim asks for a device count rather than a
   # capacity request. This is what lets extended resources request >1 GPU.
   check_contains "pod claim requests GPUs by device count" "count:" "${pod_manifest}"
   check_contains "VM claim requests GPUs by device count" "count:" "${vm_manifest}"
   check_not_contains "no claim uses a gpu_count capacity request" "gpu_count:" "${pod_manifest}${vm_manifest}"
-  check_contains "device selector reads ${GPU_TYPE_ATTRIBUTE}" "${GPU_TYPE_ATTRIBUTE}" "${pod_manifest}"
-  # The chart's catch-all class matches every Thunder GPU. Giving it an
-  # extended resource name would let one request mix GPU models, so the
-  # per-GPU-type classes the operator generates carry those names instead.
-  check_not_contains "catch-all DeviceClass exposes no extended resource" \
-    "extendedResourceName" "${main_manifest}"
+  # The GPU model is pinned by the class the claim names, not by a selector.
+  check_contains "claims name a per-GPU-type DeviceClass" "deviceClassName: \"thunder-gpu-a6000\"" \
+    "${pod_manifest}"
+  # No catch-all DeviceClass at all: every request must name a GPU model, and a
+  # class that matched every model could be satisfied with a mix of them.
+  check_not_contains "chart ships no DeviceClass" "kind: DeviceClass" "${main_manifest}"
   check_contains "operator generates per-GPU-type extended resources" \
     "EXTENDED_RESOURCE_PREFIX" "${main_manifest}"
   check_contains "operator may manage DeviceClasses" "deviceclasses" "${main_manifest}"
+  # Sharing is expressed by publishing more devices, never consumable capacity.
+  check_not_contains "chart configures no consumable capacity" "sharesPerGPU" "${main_manifest}"
+  check_not_contains "test charts pin a GPU type by class" "deviceClassName: \"thunder-gpu\"" \
+    "${pod_manifest}${vm_manifest}"
 
   step "Advertised IP"
   check_contains "daemon reads ${ADVERTISED_IP_LABEL}" "${ADVERTISED_IP_LABEL}" "${main_manifest}"

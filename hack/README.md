@@ -41,8 +41,9 @@ What it does:
 3. Installs the chart, which exercises the CRDs, RBAC and the values schema
    against a real API server.
 4. Starts a stub Thunder API serving synthetic inventory, initially 4x A6000 in
-   one zone. The stub re-reads its inventory file per request, so the test can
-   enroll and retire hardware mid-run.
+   one zone at a `1x` oversubscription target. The stub re-reads its inventory
+   file per request, so the test can enroll hardware and change capacity policy
+   mid-run.
 5. Runs the **real operator binary** against that stub and the kind cluster,
    then asserts the published `ResourceSlice`: driver, one device per GPU,
    device naming, zone attribute, shard count, and that exclusive GPUs carry no
@@ -63,8 +64,9 @@ What it does:
 11. Asserts a request for more GPUs than the zone has never allocates.
 12. Retires the H100s and asserts the class and pool are pruned, leaving the
     other model untouched.
-13. Restarts the operator with `SHARES_PER_GPU=2` and asserts the GPUs are
-    republished as shareable with the right per-GPU capacity.
+13. Raises the zone's oversubscription target in the stub API to `1.5` and
+    asserts the pool grows from 4 to 6 GPUs, records the target on the slice,
+    keeps the devices exclusive, and shrinks again when the target returns to 1.
 
 ### What it cannot cover
 
@@ -83,9 +85,8 @@ hack/test-local.sh --node-image kindest/node:v1.34.0
 hack/test-local.sh --cluster my-cluster
 ```
 
-The kind config sets `DRAExtendedResource` and `DRAConsumableCapacity`
-explicitly. Both are beta and on by default from Kubernetes 1.36, but setting
-them keeps older node images working.
+The kind config sets `DRAExtendedResource` explicitly. It is beta and on by
+default from Kubernetes 1.36, but setting it keeps older node images working.
 
 On failure the script prints the operator log, slices, claims and pods before
 cleaning up.

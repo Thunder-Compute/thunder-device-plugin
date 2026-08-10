@@ -49,52 +49,16 @@ for resource in deviceclasses resourceclaims resourceclaimtemplates resourceslic
   fi
 done
 
-# Consumable capacity is only needed when the operator is configured to
-# oversubscribe GPUs (operator.sharesPerGPU > 1). With the default of one
-# exclusive claim per GPU the driver runs on plain, GA DRA.
-capacity_probe="$(cat <<YAML
-apiVersion: resource.k8s.io/v1
-kind: ResourceSlice
-metadata:
-  name: thunder-preflight-capacity-probe
-spec:
-  driver: ${DRIVER_NAME}
-  pool:
-    name: preflight/probe
-    generation: 1
-    resourceSliceCount: 1
-  allNodes: true
-  devices:
-    - name: probe
-      allowMultipleAllocations: true
-      capacity:
-        ${SHARES_CAPACITY}:
-          value: "2"
-YAML
-)"
-
-if probe_output="$(printf '%s' "${capacity_probe}" | kube apply --dry-run=server -o json -f - 2>&1)"; then
-  kept="$(printf '%s' "${probe_output}" | jq -r \
-    --arg key "${SHARES_CAPACITY}" '.spec.devices[0].capacity[$key].value // ""')"
-  if [[ "${kept}" == "2" ]]; then
-    check_pass "DRAConsumableCapacity available (GPU oversubscription supported)"
-  else
-    warn "DRAConsumableCapacity is off: operator.sharesPerGPU must stay at 1"
-    log "    it is beta and on by default from Kubernetes 1.36"
-  fi
-else
-  warn "could not probe DRAConsumableCapacity: ${probe_output}"
-fi
-
-# The extended resource form (resources.limits: thundercompute.com/gpu) needs
-# DRAExtendedResource, which is beta and on by default from 1.36.
+# The extended resource form (resources.limits: thundercompute.com/gpu-<type>)
+# needs DRAExtendedResource, which is beta and on by default from 1.36. Nothing
+# else the driver publishes needs a feature gate.
 extended_probe="$(cat <<YAML
 apiVersion: resource.k8s.io/v1
 kind: DeviceClass
 metadata:
   name: thunder-preflight-extended-probe
 spec:
-  extendedResourceName: ${THUNDER_DOMAIN}/gpu
+  extendedResourceName: ${THUNDER_DOMAIN}/gpu-preflight
   selectors:
     - cel:
         expression: device.driver == "${DRIVER_NAME}"

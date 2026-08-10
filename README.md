@@ -26,6 +26,7 @@ make test-local   # full test on a throwaway kind cluster, no GPU needed
   - [ResourceClaims](#resourceclaims)
   - [KubeVirt VMs](#kubevirt-vms)
 - [GPU types](#gpu-types)
+- [Oversubscription](#oversubscription)
 - [Node setup](#node-setup)
 - [Feature gates](#feature-gates)
 - [Configuration](#configuration)
@@ -55,10 +56,9 @@ Everything lives under one domain:
 | DRA driver | `thundercompute.com` |
 | Extended resource | `thundercompute.com/gpu-<type>` |
 | Per-type `DeviceClass` | `thunder-gpu-<type>` (generated) |
-| Catch-all `DeviceClass` | `thunder-gpu` (for claims with your own selectors) |
 | Device attributes | `thundercompute.com/gpu_type`, `thundercompute.com/zone` |
 | Device names | `<gpu-type>-<n>`, one per GPU |
-| Oversubscription capacity | `thundercompute.com/shares` (only when `sharesPerGPU > 1`) |
+| Oversubscription target | `thundercompute.com/oversubscription` (slice label) |
 | CDI device | `thundercompute.com/gpu=claim-<uid>` |
 | Per-claim resource | `clients.thundercompute.com` |
 
@@ -67,7 +67,7 @@ Everything lives under one domain:
 | | |
 | --- | --- |
 | Kubernetes 1.34+ | Default config uses only GA DRA APIs — no feature gates |
-| Kubernetes 1.36+ | Needed for `resources.limits` requests and GPU oversubscription ([why](#feature-gates)) |
+| Kubernetes 1.36+ | Needed only for `resources.limits` requests ([why](#feature-gates)) |
 | NVIDIA driver 610+ | On GPU-serving nodes only |
 | Thunder API token | Permissions for zones, servers, clients, enrollment tokens |
 | KubeVirt + CDI | Only for VM workloads |
@@ -99,10 +99,12 @@ kubectl get deviceclasses -l app.kubernetes.io/name=thunder-dra-driver \
 
 ```text
 CLASS               RESOURCE
-thunder-gpu         <none>
 thunder-gpu-a6000   thundercompute.com/gpu-a6000
 thunder-gpu-h100    thundercompute.com/gpu-h100
 ```
+
+One class per GPU model. There is no "any GPU" class or resource — see
+[GPU types](#gpu-types).
 
 Helm never upgrades `crds/`, so re-apply it on every chart upgrade.
 
@@ -111,7 +113,7 @@ Helm never upgrades `crds/`, so re-apply it on every chart upgrade.
 | | Syntax | GPU type from | Requires |
 | --- | --- | --- | --- |
 | [Extended resource](#extended-resources) | `resources.limits` | the resource name | 1.36+ |
-| [`ResourceClaim`](#resourceclaims) | `count:` + selector | a CEL selector | 1.34+ |
+| [`ResourceClaim`](#resourceclaims) | `count:` | the `DeviceClass` name | 1.34+ |
 
 Both draw from the same zone pool.
 
@@ -152,12 +154,9 @@ spec:
       requests:
         - name: gpu
           exactly:
-            deviceClassName: thunder-gpu
+            deviceClassName: thunder-gpu-a6000   # the class pins the model
             allocationMode: ExactCount
-            count: 2                    # one device per GPU
-            selectors:
-              - cel:
-                  expression: device.attributes["thundercompute.com"]["gpu_type"] == "A6000"
+            count: 2                             # one device per GPU
 ---
 apiVersion: v1
 kind: Pod
@@ -211,12 +210,9 @@ spec:
     requests:
       - name: gpu
         exactly:
-          deviceClassName: thunder-gpu
+          deviceClassName: thunder-gpu-a6000
           allocationMode: ExactCount
           count: 1
-          selectors:
-            - cel:
-                expression: device.attributes["thundercompute.com"]["gpu_type"] == "A6000"
 ---
 apiVersion: kubevirt.io/v1
 kind: VirtualMachine
@@ -287,29 +283,46 @@ Adding a Kubernetes node is not the trigger; enrolling it with Thunder is.
 kubectl get deviceclasses -l app.kubernetes.io/name=thunder-dra-driver --watch
 ```
 
-**Every request must pin a GPU type.** A zone can serve several models, and one
-Thunder client is enrolled with exactly one model, so a mixed claim is unservable.
+**Every request must name a GPU model.** There is deliberately no catch-all class
+or `thundercompute.com/gpu` resource. A `DeviceClass` has only per-device
+selectors and no `matchAttribute` constraint, so an "any GPU" request could be
+satisfied with a mix of models — and one Thunder client is enrolled with exactly
+one model, so a mixed claim is unservable.
 
-- **Extended resources** pin it by name: `thundercompute.com/gpu-a6000`.
-  A `DeviceClass` has only per-device selectors and no `matchAttribute`
-  constraint, so a *catch-all* `thundercompute.com/gpu` could return a mix of
-  models. That is why the chart ships `thunder-gpu` with no extended resource
-  name. Turn it on only if every zone serves one model:
-  `--set deviceClass.extendedResourceName=thundercompute.com/gpu`.
-- **Claims** pin it with a CEL selector, which is evaluated per device. Writing a
-  multi-GPU claim with no type selector? Add a constraint:
-
-  ```yaml
-  spec:
-    devices:
-      constraints:
-        - matchAttribute: thundercompute.com/gpu_type
-  ```
+```yaml
+resources:
+  limits:
+    thundercompute.com/gpu-a6000: 2   # valid
+    thundercompute.com/gpu: 2         # does not exist
+```
 
 Notes: it polls rather than watches, so new hardware appears within
 `operator.reconcileInterval`. A model that leaves inventory entirely has its class
 removed — running claims are unaffected, new pods pend. Requesting a model you do
 not own yet leaves the pod `Pending` rather than failing.
+
+## Oversubscription
+
+How many GPUs a zone publishes is **capacity policy from the Thunder API**, not a
+chart setting. The operator reads each zone's oversubscription target per GPU
+model and publishes that many devices:
+
+```text
+4 physical A6000s x 1.5 target  ->  6 published GPUs
+```
+
+Change the target in Thunder and the pool resizes on the next reconcile — no
+redeploy. Targets round down, so a target is never exceeded, and a missing or
+malformed target falls back to `1` rather than emptying a zone. If the API call
+fails the operator logs a warning and assumes `1` rather than failing inventory.
+
+Devices stay exclusive either way: one claim gets whole GPUs, and sharing is
+expressed by publishing more of them. Nothing uses DRA consumable capacity.
+
+```bash
+kubectl get resourceslices -l app.kubernetes.io/name=thunder-dra-driver \
+  -o custom-columns=POOL:.spec.pool.name,TARGET:'.metadata.labels.thundercompute\.com/oversubscription'
+```
 
 ## Node setup
 
@@ -338,20 +351,19 @@ kubectl label node <node> thundercompute.com/advertised-ip=<reachable-ip>
 
 ## Feature gates
 
-The DRA APIs are GA in 1.34 and the default configuration uses nothing else — **a
-stock 1.34+ cluster needs no gates.** Two optional capabilities do:
+The DRA APIs are GA in 1.34 and everything the driver publishes uses only those —
+**a stock 1.34+ cluster needs no gates.** One optional capability does:
 
 | Capability | Gate | Needed for |
 | --- | --- | --- |
 | Extended resources | `DRAExtendedResource` | `resources.limits` requests |
-| GPU oversubscription | `DRAConsumableCapacity` | `operator.sharesPerGPU > 1` |
 
-Both are **beta and on by default from 1.36**, so this only matters on 1.34–1.35,
-where they are alpha. EKS, GKE and AKS on 1.36+ work with no control plane
-configuration.
+It is **beta and on by default from 1.36**, so this only matters on 1.34–1.35,
+where it is alpha. Without it, use `ResourceClaim`s — they need no gate. EKS, GKE
+and AKS on 1.36+ work with no control plane configuration.
 
 <details>
-<summary>Enabling them on 1.34–1.35</summary>
+<summary>Enabling it on 1.34–1.35</summary>
 
 Set on all four components — API server, scheduler, controller-manager, kubelet.
 Missing the API server one is the failure worth knowing: objects are accepted but
@@ -361,13 +373,13 @@ the field is silently dropped.
 
 ```yaml
 kube-apiserver-arg:
-  - "feature-gates=DRAExtendedResource=true,DRAConsumableCapacity=true"
+  - "feature-gates=DRAExtendedResource=true"
 kube-scheduler-arg:
-  - "feature-gates=DRAExtendedResource=true,DRAConsumableCapacity=true"
+  - "feature-gates=DRAExtendedResource=true"
 kube-controller-manager-arg:
-  - "feature-gates=DRAExtendedResource=true,DRAConsumableCapacity=true"
+  - "feature-gates=DRAExtendedResource=true"
 kubelet-arg:
-  - "feature-gates=DRAExtendedResource=true,DRAConsumableCapacity=true"
+  - "feature-gates=DRAExtendedResource=true"
 ```
 
 Agents need only the `kubelet-arg` block. Restart `rke2-server`/`rke2-agent` or
@@ -379,7 +391,6 @@ Agents need only the `kubelet-arg` block. Restart `rke2-server`/`rke2-agent` or
 ```yaml
 featureGates:
   DRAExtendedResource: true
-  DRAConsumableCapacity: true
 ```
 
 If a component already has `--feature-gates`, extend that list — a second flag is
@@ -392,7 +403,6 @@ kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
 featureGates:
   DRAExtendedResource: true
-  DRAConsumableCapacity: true
 nodes:
   - role: control-plane
 ```
@@ -426,10 +436,9 @@ misspelled `--set` key fails the install.
 
 | Value | Default | Purpose |
 | --- | --- | --- |
-| `operator.sharesPerGPU` | `1` | Clients sharing one GPU; `>1` needs 1.36+ |
 | `operator.extendedResourcePrefix` | `thundercompute.com/gpu-` | Prefix for generated per-type resources; `""` disables |
-| `operator.reconcileInterval` | `60s` | How quickly new hardware appears |
-| `deviceClass.extendedResourceName` | `""` | Catch-all resource; unsafe with multiple GPU types |
+| `operator.deviceClassPrefix` | `thunder-gpu-` | Name prefix for the generated classes |
+| `operator.reconcileInterval` | `60s` | How quickly inventory and targets are picked up |
 | `node.advertisedIP` | `""` | Pins the advertised IP for every node |
 | `nvidia.minDriverVersion` | `610` | Daemon refuses older drivers |
 | `thunder.existingSecret` | `""` | Reuse a pre-created token Secret |
@@ -466,7 +475,8 @@ Details in [`hack/README.md`](hack/README.md).
 | `thundercompute.com/gpu-x` unknown | No node of that model is enrolled | `kubectl get deviceclasses -l app.kubernetes.io/name=thunder-dra-driver` |
 | Extended resource ignored | `DRAExtendedResource` off (1.34–1.35) | `make preflight` |
 | Pod stuck `ContainerCreating` | Daemon failing to prepare | `kubectl -n thunder-system logs -l app.kubernetes.io/component=daemon` |
-| `claim mixes Thunder pools` | Claim spans GPU models | Pin a type — see [GPU types](#gpu-types) |
+| `thundercompute.com/gpu` unknown | There is no "any GPU" resource | Name a model: `thundercompute.com/gpu-a6000` |
+| Pool bigger than the GPU count | Zone oversubscription target above 1 | See [Oversubscription](#oversubscription) |
 | Daemon will not start | No zone label, or no node IP | `kubectl get node <node> -o wide` |
 | VM boots without a GPU | Guest artifacts not mounted | `kubectl get cm,secret \| grep <claim-name>-thunder` |
 | No slices at all | Operator cannot reach Thunder | `kubectl -n thunder-system logs -l app.kubernetes.io/component=operator` |

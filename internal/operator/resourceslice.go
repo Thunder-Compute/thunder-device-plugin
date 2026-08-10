@@ -10,7 +10,6 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	resourcev1 "k8s.io/api/resource/v1"
-	apiresource "k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -25,17 +24,14 @@ const (
 	zoneAttributeName    = thunderDomain + "/zone"
 	gpuTypeAttributeName = thunderDomain + "/gpu_type"
 
-	// sharesCapacityName counts how many clients may share one GPU. It is only
-	// published when oversubscription is configured.
-	sharesCapacityName = thunderDomain + "/shares"
-
 	// Labels recording the inputs that produced a slice, so a later reconcile
 	// can compare against them without re-querying Thunder.
-	zoneLabelName           = thunderDomain + "/zone"
-	gpuTypeLabelName        = thunderDomain + "/gpu_type"
-	hostCapacityLabelName   = thunderDomain + "/host-capacity"
-	clientCapacityLabelName = thunderDomain + "/client-capacity"
-	shardLabelName          = thunderDomain + "/shard"
+	zoneLabelName             = thunderDomain + "/zone"
+	gpuTypeLabelName          = thunderDomain + "/gpu_type"
+	hostCapacityLabelName     = thunderDomain + "/host-capacity"
+	clientCapacityLabelName   = thunderDomain + "/client-capacity"
+	oversubscriptionLabelName = thunderDomain + "/oversubscription"
+	shardLabelName            = thunderDomain + "/shard"
 
 	// devicesPerSlice mirrors resource.ResourceSliceMaxDevices. A zone with
 	// more GPUs than this is published as several slices in one pool.
@@ -49,10 +45,12 @@ var invalidDNSLabelRun = regexp.MustCompile(`[^a-z0-9-]+`)
 
 // buildResourceSlices renders a zone's GPUs of one type as ResourceSlices.
 //
-// Each GPU is published as its own device, so a workload asks for several GPUs
-// with a device count rather than a capacity request. That is what lets the
-// same pool satisfy the extended resource form (`thundercompute.com/gpu: 2`),
-// which the scheduler always translates into a count of devices.
+// Each GPU is published as its own plain device, so a workload asks for several
+// GPUs with a device count rather than a capacity request. That is what lets the
+// same pool satisfy an extended resource request, which the scheduler always
+// translates into a count of devices. Oversubscription is applied upstream, by
+// publishing more devices than there are physical GPUs, so no device carries
+// consumable capacity and the driver stays on plain, GA DRA.
 //
 // A slice holds at most devicesPerSlice devices, so a large zone is sharded
 // across several slices sharing one pool name and generation.
@@ -96,6 +94,7 @@ func buildSlice(cfg Config, definition poolDefinition, generation int64, shard, 
 				gpuTypeLabelName:               dnsLabel(definition.GPUType),
 				hostCapacityLabelName:          fmt.Sprint(definition.HostCapacity),
 				clientCapacityLabelName:        fmt.Sprint(definition.ClientCapacity),
+				oversubscriptionLabelName:      formatOversubscription(definition.Oversubscription),
 				shardLabelName:                 strconv.Itoa(shard),
 			},
 		},
@@ -124,38 +123,31 @@ func buildSlice(cfg Config, definition poolDefinition, generation int64, shard, 
 	}
 }
 
-// buildDevice renders one GPU. Without oversubscription the device carries no
-// capacity at all, which keeps the driver on plain DRA and off the consumable
-// capacity feature gate.
+// buildDevice renders one GPU. Devices are exclusive: a claim gets whole GPUs,
+// and sharing is expressed by how many devices the zone publishes.
 func buildDevice(cfg Config, definition poolDefinition, index int64) resourcev1.Device {
 	zone := definition.Zone
 	gpuType := strings.ToUpper(definition.GPUType)
 
-	device := resourcev1.Device{
+	return resourcev1.Device{
 		Name: deviceName(definition.GPUType, index),
 		Attributes: map[resourcev1.QualifiedName]resourcev1.DeviceAttribute{
 			resourcev1.QualifiedName(gpuTypeAttributeName): {StringValue: &gpuType},
 			resourcev1.QualifiedName(zoneAttributeName):    {StringValue: &zone},
 		},
 	}
+}
 
-	if cfg.SharesPerGPU > 1 {
-		allowMultipleAllocations := true
-		one := apiresource.MustParse("1")
-		device.AllowMultipleAllocations = &allowMultipleAllocations
-		device.Capacity = map[resourcev1.QualifiedName]resourcev1.DeviceCapacity{
-			resourcev1.QualifiedName(sharesCapacityName): {
-				Value: apiresource.MustParse(fmt.Sprint(cfg.SharesPerGPU)),
-				// A claim takes one share of each GPU it is allocated; asking
-				// for more GPUs means asking for more devices.
-				RequestPolicy: &resourcev1.CapacityRequestPolicy{
-					Default:     quantityPtr(one),
-					ValidValues: []apiresource.Quantity{one},
-				},
-			},
-		}
+// formatOversubscription renders the target for a label, which cannot hold an
+// arbitrary float. Trailing zeros are trimmed so 1.50 and 1.5 do not look like
+// a change and churn the slice generation.
+func formatOversubscription(target float64) string {
+	if target <= 0 {
+		target = 1
 	}
-	return device
+	text := strconv.FormatFloat(target, 'f', 3, 64)
+	text = strings.TrimRight(text, "0")
+	return strings.TrimSuffix(text, ".")
 }
 
 func resourceSliceName(prefix, zone, gpuType string, shard int) string {
@@ -191,9 +183,4 @@ func truncateLabel(label string, max int) string {
 	sum := sha256.Sum256([]byte(label))
 	hash := hex.EncodeToString(sum[:])[:10]
 	return strings.TrimSuffix(label[:max-len(hash)-1], "-") + "-" + hash
-}
-
-func quantityPtr(value apiresource.Quantity) *apiresource.Quantity {
-	copied := value.DeepCopy()
-	return &copied
 }

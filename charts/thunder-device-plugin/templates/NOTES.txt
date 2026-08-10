@@ -4,8 +4,7 @@ Components:
   operator  {{ if .Values.operator.enabled }}enabled  - publishes ResourceSlice inventory{{ else }}DISABLED - no inventory will be published{{ end }}
   daemon    DaemonSet on nodes labelled {{ .Values.nodeLabelKeys.thunderNode }}=true
   driver    {{ .Values.dra.driverName }}
-  class     {{ if .Values.deviceClass.enabled }}{{ .Values.deviceClass.name }}{{ else }}DISABLED - create a DeviceClass yourself{{ end }}
-  sharing   {{ if gt (int .Values.operator.sharesPerGPU) 1 }}{{ .Values.operator.sharesPerGPU }} clients per GPU (needs DRAConsumableCapacity){{ else }}one exclusive claim per GPU{{ end }}
+  classes   {{ if .Values.operator.extendedResourcePrefix }}one per GPU type, generated from Thunder inventory{{ else }}DISABLED - create DeviceClasses yourself{{ end }}
 
 1. Wait for both components to become ready:
 
@@ -16,27 +15,24 @@ Components:
 
 2. Confirm the operator published GPU inventory:
 
-     kubectl get resourceslices -l app.kubernetes.io/name=thunder-dra-driver
+     kubectl get deviceclasses -l app.kubernetes.io/name=thunder-dra-driver \
+       -o custom-columns=CLASS:.metadata.name,RESOURCE:.spec.extendedResourceName
 
    Or run the packaged smoke test:
 
      helm test {{ .Release.Name }} --namespace {{ .Values.namespace.name }}
 
-3. Request a GPU from a pod.
+3. Request GPUs. Every request names a GPU model; there is no "any GPU" form.
 {{- if .Values.operator.extendedResourcePrefix }}
 
-   The simple form, which needs Kubernetes 1.36+. The GPU model is part of the
-   resource name; list what this cluster offers with:
-
-     kubectl get deviceclasses -l app.kubernetes.io/name=thunder-dra-driver \
-       -o custom-columns=CLASS:.metadata.name,RESOURCE:.spec.extendedResourceName
+   As an extended resource (needs Kubernetes 1.36+):
 
      resources:
        limits:
          {{ .Values.operator.extendedResourcePrefix }}<gpu-type>: 2
 {{- end }}
 
-   Or a ResourceClaim, which works on any supported cluster:
+   Or as a ResourceClaim, which works on any supported cluster:
 
      apiVersion: resource.k8s.io/v1
      kind: ResourceClaimTemplate
@@ -48,12 +44,9 @@ Components:
            requests:
              - name: gpu
                exactly:
-                 deviceClassName: {{ .Values.deviceClass.name }}
+                 deviceClassName: {{ .Values.operator.deviceClassPrefix }}<gpu-type>
                  allocationMode: ExactCount
                  count: 2          # one device per GPU
-                 selectors:        # pin the GPU model
-                   - cel:
-                       expression: device.attributes["thundercompute.com"]["gpu_type"] == "A6000"
 
 {{- if not .Values.thunder.existingSecret }}
 

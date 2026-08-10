@@ -4,15 +4,17 @@ Attach [Thunder Compute](https://www.thundercompute.com) GPUs to Kubernetes pods
 and KubeVirt VMs through Dynamic Resource Allocation (DRA).
 
 Workloads request a GPU either as an extended resource named after the model
-(`thundercompute.com/gpu-a6000: 2`) or through a `ResourceClaim` with a CEL
-selector. Either way the GPUs come from the zone pool, not from node-local
-`allocatable`.
+(`thundercompute.com/gpu-a6000: 2`) or through a `ResourceClaim` naming the
+model's `DeviceClass`. Either way the GPUs come from the zone pool, not from
+node-local `allocatable`, and every request names a model — there is no "any
+GPU" form.
 
 The chart deploys two components:
 
 - **operator** — a Deployment that reads Thunder inventory, publishes one
-  `ResourceSlice` pool per zone and GPU type (one device per GPU), and generates
-  a `DeviceClass` per GPU type so each model has its own extended resource.
+  `ResourceSlice` pool per zone and GPU type (one device per GPU, scaled by the
+  zone's oversubscription target from the Thunder API), and generates a
+  `DeviceClass` per GPU type so each model has its own extended resource.
 - **daemon** — a DaemonSet on Thunder GPU nodes that enrolls the node and serves
   the DRA kubelet plugin.
 
@@ -39,8 +41,7 @@ helm test thunder-device-plugin --namespace thunder-system
 | Requirement | Notes |
 | --- | --- |
 | Kubernetes `>=1.34.0` | Enforced by `kubeVersion`; `resource.k8s.io/v1` must be served |
-| `DRAExtendedResource` | Only for the `resources.limits: thundercompute.com/gpu` form. Beta and on by default from 1.36 |
-| `DRAConsumableCapacity` | Only when `operator.sharesPerGPU > 1`. Beta and on by default from 1.36 |
+| `DRAExtendedResource` | Only for the `resources.limits` form. Beta and on by default from 1.36. `ResourceClaim`s need no gate |
 | A Thunder API token | Needs zones, nodes, clients and enrollment-token permissions |
 | Node labels | `thundercompute.com/node=true`, a zone label, `nvidia.com/gpu.present=true` |
 
@@ -121,7 +122,6 @@ typos and wrong types fail at install time rather than silently doing nothing.
 | `operator.driverName` | string | `thundercompute.com` | DRA driver name; must match `dra.driverName` |
 | `operator.resourceSliceNamePrefix` | string | `thunder` | Prefix for generated `ResourceSlice` names |
 | `operator.reconcileInterval` | string | `60s` | Go duration between inventory reconciles |
-| `operator.sharesPerGPU` | int | `1` | Clients allowed to share one GPU. `1` keeps GPUs exclusive and publishes no consumable capacity; above `1` needs Kubernetes 1.36+ |
 | `operator.deviceClassPrefix` | string | `thunder-gpu-` | Name prefix for the generated per-GPU-type `DeviceClass`es |
 | `operator.extendedResourcePrefix` | string | `thundercompute.com/gpu-` | Prefix for per-GPU-type extended resources, so `resources.limits: thundercompute.com/gpu-a6000: 2` pins the model. `""` disables the generated classes |
 | `operator.podAnnotations` | object | `{}` | Extra operator pod annotations |
@@ -165,9 +165,6 @@ label, then the node's own IP (`status.addresses` `InternalIP`, then
 | `dra.thunderClientNamespace` | string | `thunder-system` | Namespace for `ThunderClient` resources |
 | `dra.kubeletPluginDir` | string | `/var/lib/kubelet/plugins/thundercompute.com` | Kubelet plugin socket directory |
 | `dra.kubeletRegistrarDir` | string | `/var/lib/kubelet/plugins_registry` | Kubelet plugin registrar directory |
-| `deviceClass.enabled` | bool | `true` | Create the `DeviceClass` |
-| `deviceClass.name` | string | `thunder-gpu` | `DeviceClass` name workloads reference |
-| `deviceClass.extendedResourceName` | string | `""` | Catch-all extended resource for the class. Empty by default: this class matches every GPU model, and a `DeviceClass` cannot require one request to stay within a single model. Only set it if every zone serves one GPU type |
 | `cdi.specDir` | string | `/var/run/cdi` | Where the daemon writes CDI specs |
 
 ### NVIDIA and host access

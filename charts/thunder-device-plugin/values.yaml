@@ -28,19 +28,17 @@ operator:
   # How many clients may share one physical GPU. 1 keeps every GPU exclusive
   # and publishes no consumable capacity at all, which means the driver needs
   # only the GA DRA APIs. Raising it oversubscribes each GPU and requires the
-  # DRAConsumableCapacity feature gate (beta and on by default from 1.36).
-  sharesPerGPU: 1
   # The operator generates one DeviceClass per GPU type it finds in inventory,
-  # so a workload can request a specific model by name:
+  # so every request names the model it wants:
   #
   #   resources:
   #     limits:
   #       thundercompute.com/gpu-a6000: 2
   #
-  # This is the only way to pin a GPU type through an extended resource: a
-  # DeviceClass has selectors but no cross-device constraint, so a generic
-  # resource name can be satisfied with a mix of models.
-  # Set extendedResourcePrefix to "" to disable the generated classes.
+  # There is deliberately no catch-all class or "any GPU" resource: a
+  # DeviceClass has selectors but no cross-device constraint, so an unpinned
+  # request could be satisfied with a mix of models, and one Thunder client is
+  # enrolled with exactly one model.
   deviceClassPrefix: thunder-gpu-
   extendedResourcePrefix: thundercompute.com/gpu-
   podAnnotations: {}
@@ -89,21 +87,6 @@ dra:
   thunderClientNamespace: thunder-system
   kubeletPluginDir: /var/lib/kubelet/plugins/thundercompute.com
   kubeletRegistrarDir: /var/lib/kubelet/plugins_registry
-
-deviceClass:
-  enabled: true
-  name: thunder-gpu
-  # Optional catch-all extended resource for this class, e.g.
-  # thundercompute.com/gpu. It is EMPTY by default on purpose: this class
-  # matches every Thunder GPU, and a DeviceClass cannot require that the
-  # devices in one request share a model, so `thundercompute.com/gpu: 4` in a
-  # zone with two models can return a mix of them -- which the node daemon then
-  # refuses to prepare.
-  #
-  # Prefer the per-GPU-type resources the operator generates (see
-  # operator.extendedResourcePrefix). Set this only if every zone serves a
-  # single GPU type.
-  extendedResourceName: ""
 
 cdi:
   specDir: /var/run/cdi

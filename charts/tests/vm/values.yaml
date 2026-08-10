@@ -1,5 +1,5 @@
 driverName: thundercompute.com
-deviceClassName: thunder-gpu
+deviceClassPrefix: thunder-gpu-
 
 gpu:
   type: A6000

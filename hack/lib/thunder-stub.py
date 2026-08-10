@@ -24,6 +24,9 @@ KEYS = {
     "/api/v1/clients": "clients",
 }
 
+# /api/v1/zones/{zoneId}/oversubscription-targets
+OVERSUBSCRIPTION_SUFFIX = "/oversubscription-targets"
+
 
 def read_inventory():
     try:
@@ -35,12 +38,20 @@ def read_inventory():
 
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
-        key = KEYS.get(urlparse(self.path).path)
-        if key is None:
-            self.send_response(404)
-            self.end_headers()
-            return
-        payload = json.dumps({key: read_inventory().get(key, [])}).encode()
+        path = urlparse(self.path).path
+        inventory = read_inventory()
+
+        if path.endswith(OVERSUBSCRIPTION_SUFFIX):
+            body = inventory.get("oversubscription", {"oversubscriptionTargets": []})
+        else:
+            key = KEYS.get(path)
+            if key is None:
+                self.send_response(404)
+                self.end_headers()
+                return
+            body = {key: inventory.get(key, [])}
+
+        payload = json.dumps(body).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(payload)))

@@ -69,7 +69,7 @@ func (o *Operator) Sync(ctx context.Context) error {
 		return err
 	}
 
-	desired, err := buildDesiredPools(ctx, o.inventory)
+	desired, err := buildDesiredPools(ctx, o.inventory, o.logger)
 	if err != nil {
 		return err
 	}
@@ -244,7 +244,6 @@ func currentDefinitionMatches(cfg Config, current []*resourcev1.ResourceSlice, d
 		DriverName:        current[0].Spec.Driver,
 		NamePrefix:        DefaultNamePrefix,
 		ZoneLabelKey:      cfg.ZoneLabelKey,
-		SharesPerGPU:      cfg.SharesPerGPU,
 		ReconcileInterval: time.Minute,
 	}, definition, current[0].Spec.Pool.Generation)
 	if len(wanted) != len(current) {

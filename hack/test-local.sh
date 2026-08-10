@@ -44,9 +44,8 @@ OTHER_EXTENDED_RESOURCE="${THUNDER_DOMAIN}/gpu-h100"
 OTHER_DEVICE_CLASS="thunder-gpu-h100"
 
 CLUSTER="${CLUSTER:-thunder-local}"
-# 1.36 is the first release where the DRA extended resource and consumable
-# capacity gates are beta and on by default. The kind config enables them
-# explicitly so older images work too.
+# 1.36 is the first release where DRAExtendedResource is beta and on by default.
+# The kind config enables it explicitly so older images work too.
 NODE_IMAGE="${NODE_IMAGE:-kindest/node:v1.36.1}"
 STUB_PORT="${STUB_PORT:-0}"
 KEEP=false
@@ -115,11 +114,9 @@ create_cluster() {
     cat > "${WORK_DIR}/kind.yaml" <<EOF
 kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
-# Both are beta and on by default from 1.36; set explicitly so older node
-# images work too.
+# Beta and on by default from 1.36; set explicitly so older node images work.
 featureGates:
   DRAExtendedResource: true
-  DRAConsumableCapacity: true
 nodes:
   - role: control-plane
 EOF
@@ -144,9 +141,8 @@ EOF
   kube label node "${node}" "${ZONE_LABEL}=${ZONE}" --overwrite >/dev/null
   check_pass "labelled ${node} with ${ZONE_LABEL}=${ZONE}"
 
-  # With the default sharesPerGPU=1 the driver publishes plain devices and
-  # needs only the GA DRA APIs. The extended resource path does need its own
-  # gate, so probe for that instead.
+  # The driver publishes plain devices and needs only the GA DRA APIs. The
+  # extended resource path does need its own gate, so probe for that.
   local probe kept
   probe="$(kube apply --dry-run=server -o json -f - 2>/dev/null <<EOF || true
 apiVersion: resource.k8s.io/v1
@@ -182,15 +178,9 @@ install_chart() {
     return 1
   fi
 
-  local expression
-  expression="$(kube get deviceclass "${DEVICE_CLASS_NAME}" \
-    -o jsonpath='{.spec.selectors[0].cel.expression}' 2>/dev/null || true)"
-  check_contains "DeviceClass selects driver ${DRIVER_NAME}" "\"${DRIVER_NAME}\"" "${expression}"
-
-  # The catch-all class matches every Thunder GPU, so it must not carry an
-  # extended resource name: nothing would pin the GPU model.
-  check_eq "catch-all DeviceClass exposes no extended resource" "" \
-    "$(kube get deviceclass "${DEVICE_CLASS_NAME}" -o jsonpath='{.spec.extendedResourceName}' 2>/dev/null || true)"
+  # There must be no catch-all class: an unpinned request could mix GPU models.
+  check_eq "chart ships no catch-all DeviceClass" "" \
+    "$(kube get deviceclass "${DEVICE_CLASS_NAME}" -o jsonpath='{.metadata.name}' 2>/dev/null || true)"
 
   # The DaemonSet must not schedule anywhere: kind has no Thunder GPU nodes.
   local desired
@@ -199,6 +189,7 @@ install_chart() {
 }
 
 # write_inventory <gpu-type:count>... rewrites what the stub Thunder API serves.
+# OVERSUBSCRIPTION, if set, is served as the zone's default target.
 # The stub re-reads the file per request, so the operator sees the change on its
 # next reconcile without restarting anything.
 write_inventory() {
@@ -214,10 +205,12 @@ write_inventory() {
                   gpuType: $type, gpuCount: ($count | tonumber), status: "active"}]' <<<'null')"
   done
 
-  jq -nc --arg zone "${ZONE}" --argjson hosts "${hosts}" '{
+  jq -nc --arg zone "${ZONE}" --argjson hosts "${hosts}" \
+    --argjson target "${OVERSUBSCRIPTION:-1}" '{
     zones: [{zoneId: "zone-local", displayName: $zone, createdAt: "2026-01-01T00:00:00Z"}],
     hosts: $hosts,
-    clients: []
+    clients: [],
+    oversubscription: {oversubscriptionTargets: [], defaultOversubscriptionTarget: $target}
   }' > "${WORK_DIR}/inventory.json"
 }
 
@@ -300,11 +293,11 @@ run_operator() {
   check_eq "pool declares its shard count" "1" \
     "$(jq -r '.spec.pool.resourceSliceCount' <<<"${spec}")"
 
-  # Without oversubscription a GPU is exclusive, so no consumable capacity is
-  # published and the capacity feature gate is not needed at all.
-  check_eq "exclusive GPUs publish no consumable capacity" "null" \
+  # Devices are always plain: sharing is expressed by publishing more devices,
+  # never by consumable capacity, so no capacity feature gate is needed.
+  check_eq "devices publish no consumable capacity" "null" \
     "$(jq -r '.spec.devices[0].capacity // "null"' <<<"${spec}")"
-  check_eq "exclusive GPUs are not shareable" "null" \
+  check_eq "devices are exclusive" "null" \
     "$(jq -r '.spec.devices[0].allowMultipleAllocations // "null"' <<<"${spec}")"
 
   step "Per-GPU-type device classes"
@@ -587,39 +580,42 @@ test_over_capacity_is_refused() {
   helm_cmd -n default uninstall "${release}" --wait >/dev/null 2>&1 || true
 }
 
-# Raising sharesPerGPU is what turns consumable capacity on, so it is the only
-# configuration that needs the DRAConsumableCapacity gate.
-test_oversubscription() {
-  step "Oversubscription"
-  kill "${OPERATOR_PID}" 2>/dev/null
-  wait "${OPERATOR_PID}" 2>/dev/null || true
+# Oversubscription is capacity policy pulled from the Thunder API, not a chart
+# setting, so changing it upstream must change the published GPU count with no
+# redeploy.
+test_oversubscription_from_api() {
+  step "Oversubscription from the Thunder API"
 
-  SHARES_PER_GPU=2 \
-  THUNDER_API_URL="http://127.0.0.1:${STUB_PORT}" \
-  THUNDER_API_TOKEN=stub \
-  RECONCILE_INTERVAL=5s \
-    "${WORK_DIR}/thunder-dra-operator" -kubeconfig="${KUBECONFIG}" \
-    >"${WORK_DIR}/operator-shares.log" 2>&1 &
-  OPERATOR_PID=$!
-
-  local slice spec
+  local slice
   slice="$(slice_for_gpu_type "${GPU_TYPE}")"
-  if ! retry 60 2 "shared devices" -- \
-    device_is_shareable "${slice}"; then
-    check_fail "operator republished GPUs as shareable" \
-      "$(tail -5 "${WORK_DIR}/operator-shares.log")"
+  check_eq "1x target publishes the physical GPU count" "${GPU_CAPACITY}" \
+    "$(kube get resourceslice "${slice}" -o json | jq -r '.spec.devices | length')"
+
+  # 4 physical GPUs at 1.5x becomes 6 published GPUs.
+  OVERSUBSCRIPTION=1.5 write_inventory "${GPU_TYPE}:${GPU_CAPACITY}"
+  local want=$(( GPU_CAPACITY * 3 / 2 ))
+  if retry 90 2 "oversubscribed pool" -- pool_device_count_is "${GPU_TYPE}" "${want}"; then
+    check_pass "raising the API target to 1.5x published ${want} GPUs"
+  else
+    check_fail "raising the API target to 1.5x published ${want} GPUs" \
+      "got $(kube get resourceslice "$(slice_for_gpu_type "${GPU_TYPE}")" -o json | jq -r '.spec.devices | length')"
     return 1
   fi
-  check_pass "operator republished GPUs as shareable"
 
-  spec="$(kube get resourceslice "${slice}" -o json)"
-  check_eq "each GPU offers 2 shares" "2" \
-    "$(jq -r --arg k "${SHARES_CAPACITY}" '.spec.devices[0].capacity[$k].value' <<<"${spec}")"
-  # A claim takes one share per GPU; more GPUs still means more devices.
-  check_eq "a claim takes one share per GPU" "1" \
-    "$(jq -r --arg k "${SHARES_CAPACITY}" '.spec.devices[0].capacity[$k].requestPolicy.default' <<<"${spec}")"
-  check_eq "GPU count is unchanged by sharing" "${GPU_CAPACITY}" \
-    "$(jq -r '.spec.devices | length' <<<"${spec}")"
+  slice="$(slice_for_gpu_type "${GPU_TYPE}")"
+  check_eq "the target is recorded on the slice" "1.5" \
+    "$(kube get resourceslice "${slice}" -o json |
+       jq -r --arg k "${THUNDER_DOMAIN}/oversubscription" '.metadata.labels[$k] // ""')"
+  check_eq "oversubscribed GPUs stay exclusive devices" "null" \
+    "$(kube get resourceslice "${slice}" -o json | jq -r '.spec.devices[0].capacity // "null"')"
+
+  # Lowering it again must shrink the pool.
+  OVERSUBSCRIPTION=1 write_inventory "${GPU_TYPE}:${GPU_CAPACITY}"
+  if retry 90 2 "pool shrink" -- pool_device_count_is "${GPU_TYPE}" "${GPU_CAPACITY}"; then
+    check_pass "lowering the target back to 1x shrank the pool"
+  else
+    check_fail "lowering the target back to 1x shrank the pool"
+  fi
 }
 
 # ---------------------------------------------------------------------------
@@ -639,6 +635,6 @@ test_extended_resource
 test_typed_request_does_not_borrow_other_models
 test_over_capacity_is_refused
 test_removed_gpu_type_is_pruned
-test_oversubscription
+test_oversubscription_from_api
 
 summarize "test-local"

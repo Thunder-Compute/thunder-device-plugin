@@ -15,7 +15,6 @@ CHART_TEST_VM="${REPO_ROOT}/charts/tests/vm"
 THUNDER_DOMAIN="thundercompute.com"
 DRIVER_NAME="${DRIVER_NAME:-${THUNDER_DOMAIN}}"
 DEVICE_CLASS_NAME="${DEVICE_CLASS_NAME:-thunder-gpu}"
-SHARES_CAPACITY="${THUNDER_DOMAIN}/shares"
 GPU_TYPE_ATTRIBUTE="gpu_type"
 GPU_TYPE_ATTRIBUTE_KEY="${THUNDER_DOMAIN}/${GPU_TYPE_ATTRIBUTE}"
 ADVERTISED_IP_LABEL="${THUNDER_DOMAIN}/advertised-ip"
@@ -87,10 +86,13 @@ pod_is_running() {
   [[ "$(kube -n "$1" get pod "$2" -o jsonpath='{.status.phase}' 2>/dev/null)" == "Running" ]]
 }
 
-# device_is_shareable <slice> is true once the slice's devices accept multiple
-# allocations, which only happens when oversubscription is configured.
-device_is_shareable() {
-  [[ "$(kube get resourceslice "$1" -o jsonpath='{.spec.devices[0].allowMultipleAllocations}' 2>/dev/null)" == "true" ]]
+# pool_device_count_is <gpu-type> <count> is true once the pool publishes
+# exactly that many GPUs.
+pool_device_count_is() {
+  local slice
+  slice="$(slice_for_gpu_type "$1")"
+  [[ -n "${slice}" ]] || return 1
+  [[ "$(kube get resourceslice "${slice}" -o json 2>/dev/null | jq -r '.spec.devices | length')" == "$2" ]]
 }
 
 # vmi_is_running <namespace> <name>

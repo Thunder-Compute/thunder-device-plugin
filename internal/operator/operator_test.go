@@ -2,6 +2,7 @@ package operator
 
 import (
 	"context"
+	"errors"
 	"reflect"
 	"sort"
 	"strings"
@@ -16,9 +17,11 @@ import (
 )
 
 type fakeInventory struct {
-	zones   []thunder.Zone
-	nodes   map[string][]thunder.Server
-	clients map[string][]thunder.RegisteredClient
+	zones      []thunder.Zone
+	nodes      map[string][]thunder.Server
+	clients    map[string][]thunder.RegisteredClient
+	targets    map[string]thunder.ZoneOversubscriptionTargetsResponse
+	targetsErr error
 }
 
 func (f *fakeInventory) ListZones(context.Context) ([]thunder.Zone, error) {
@@ -33,13 +36,19 @@ func (f *fakeInventory) ListClients(_ context.Context, zoneID string) ([]thunder
 	return append([]thunder.RegisteredClient(nil), f.clients[zoneID]...), nil
 }
 
+func (f *fakeInventory) ListZoneOversubscriptionTargets(_ context.Context, zoneID string) (thunder.ZoneOversubscriptionTargetsResponse, error) {
+	if f.targetsErr != nil {
+		return thunder.ZoneOversubscriptionTargetsResponse{}, f.targetsErr
+	}
+	return f.targets[zoneID], nil
+}
+
 func testConfig() Config {
 	return Config{
 		DriverName:             DefaultDriverName,
 		NamePrefix:             DefaultNamePrefix,
 		ZoneLabelKey:           DefaultZoneLabelKey,
 		ReconcileInterval:      time.Minute,
-		SharesPerGPU:           DefaultSharesPerGPU,
 		DeviceClassPrefix:      DefaultDeviceClassPrefix,
 		ExtendedResourcePrefix: DefaultExtendedResourcePrefix,
 	}
@@ -62,7 +71,7 @@ func TestBuildDesiredPoolsUsesMaxHostAndClientCapacity(t *testing.T) {
 		},
 	}
 
-	pools, err := buildDesiredPools(context.Background(), inventory)
+	pools, err := buildDesiredPools(context.Background(), inventory, nil)
 	if err != nil {
 		t.Fatalf("buildDesiredPools returned error: %v", err)
 	}
@@ -185,31 +194,106 @@ func TestBuildResourceSlicesPublishesOneDevicePerGPU(t *testing.T) {
 	}
 }
 
-func TestBuildResourceSlicesOversubscribesWithShares(t *testing.T) {
-	cfg := testConfig()
-	cfg.SharesPerGPU = 3
-	definition := poolDefinition{Zone: "us-west-2a", GPUType: "A6000", Capacity: 2, HostCapacity: 2}
+func TestOversubscribedRoundsDown(t *testing.T) {
+	tests := []struct {
+		hosts  int64
+		target float64
+		want   int64
+	}{
+		{hosts: 4, target: 1, want: 4},
+		{hosts: 4, target: 1.5, want: 6},
+		{hosts: 3, target: 1.5, want: 4}, // 4.5 rounds down, never up
+		{hosts: 10, target: 2.25, want: 22},
+		{hosts: 4, target: 0.5, want: 2}, // targets below 1 hold GPUs back
+		{hosts: 0, target: 4, want: 0},
+		{hosts: 4, target: 0, want: 0},
+	}
+	for _, test := range tests {
+		if got := oversubscribed(test.hosts, test.target); got != test.want {
+			t.Fatalf("oversubscribed(%d, %v) = %d, want %d", test.hosts, test.target, got, test.want)
+		}
+	}
+}
 
-	slices := buildResourceSlices(cfg, definition, 1)
-	device := slices[0].Spec.Devices[0]
+func TestOversubscriptionTargetsFallBack(t *testing.T) {
+	targets := oversubscriptionTargets{
+		byGPUType: map[string]float64{"a6000": 2},
+		fallback:  1.5,
+	}
+	if got := targets.For("A6000"); got != 2 {
+		t.Fatalf("For(A6000) = %v, want 2", got)
+	}
+	if got := targets.For("h100"); got != 1.5 {
+		t.Fatalf("For(h100) = %v, want the zone default 1.5", got)
+	}
 
-	if device.AllowMultipleAllocations == nil || !*device.AllowMultipleAllocations {
-		t.Fatal("device does not allow multiple allocations")
+	// An absent or malformed target must not empty a zone.
+	empty := oversubscriptionTargets{}
+	if got := empty.For("a6000"); got != 1 {
+		t.Fatalf("For with no targets = %v, want 1", got)
 	}
-	capacity, ok := device.Capacity[resourcev1.QualifiedName(sharesCapacityName)]
-	if !ok {
-		t.Fatalf("device has no %s capacity", sharesCapacityName)
+	zeroed := oversubscriptionTargets{byGPUType: map[string]float64{"a6000": 0}, fallback: 0}
+	if got := zeroed.For("a6000"); got != 1 {
+		t.Fatalf("For with a zero target = %v, want 1", got)
 	}
-	if capacity.Value.Value() != 3 {
-		t.Fatalf("shares = %d, want 3", capacity.Value.Value())
+}
+
+func TestBuildDesiredPoolsAppliesOversubscription(t *testing.T) {
+	inventory := &fakeInventory{
+		zones: []thunder.Zone{{ZoneID: "zone-1", DisplayName: "us-west-2a"}},
+		nodes: map[string][]thunder.Server{
+			"zone-1": {{GPUType: "A6000", GPUCount: 4, Status: "active"}},
+		},
+		targets: map[string]thunder.ZoneOversubscriptionTargetsResponse{
+			"zone-1": {
+				OversubscriptionTargets: []thunder.ZoneOversubscriptionTarget{
+					{GPUType: "A6000", OversubscriptionTarget: 1.5},
+				},
+			},
+		},
 	}
-	// A claim takes exactly one share of each GPU it is allocated; more GPUs
-	// means more devices, never a larger capacity request.
-	if capacity.RequestPolicy == nil || capacity.RequestPolicy.Default.Value() != 1 {
-		t.Fatalf("request policy default = %v, want 1", capacity.RequestPolicy)
+
+	pools, err := buildDesiredPools(context.Background(), inventory, nil)
+	if err != nil {
+		t.Fatalf("buildDesiredPools: %v", err)
 	}
-	if len(capacity.RequestPolicy.ValidValues) != 1 || capacity.RequestPolicy.ValidValues[0].Value() != 1 {
-		t.Fatalf("valid values = %v, want [1]", capacity.RequestPolicy.ValidValues)
+	definition := pools[poolKey{Zone: "us-west-2a", GPUType: "a6000"}]
+	if definition.HostCapacity != 4 {
+		t.Fatalf("HostCapacity = %d, want 4", definition.HostCapacity)
+	}
+	if definition.Oversubscription != 1.5 {
+		t.Fatalf("Oversubscription = %v, want 1.5", definition.Oversubscription)
+	}
+	// 4 physical GPUs at 1.5x are published as 6 devices.
+	if definition.Capacity != 6 {
+		t.Fatalf("Capacity = %d, want 6", definition.Capacity)
+	}
+
+	slices := buildResourceSlices(testConfig(), definition, 1)
+	if got := len(slices[0].Spec.Devices); got != 6 {
+		t.Fatalf("devices = %d, want 6", got)
+	}
+	if got := slices[0].Labels[oversubscriptionLabelName]; got != "1.5" {
+		t.Fatalf("oversubscription label = %q, want 1.5", got)
+	}
+}
+
+func TestBuildDesiredPoolsSurvivesOversubscriptionErrors(t *testing.T) {
+	// Capacity policy must not be able to take inventory down.
+	inventory := &fakeInventory{
+		zones: []thunder.Zone{{ZoneID: "zone-1", DisplayName: "us-west-2a"}},
+		nodes: map[string][]thunder.Server{
+			"zone-1": {{GPUType: "A6000", GPUCount: 4, Status: "active"}},
+		},
+		targetsErr: errors.New("forbidden"),
+	}
+
+	pools, err := buildDesiredPools(context.Background(), inventory, nil)
+	if err != nil {
+		t.Fatalf("buildDesiredPools: %v", err)
+	}
+	if definition := pools[poolKey{Zone: "us-west-2a", GPUType: "a6000"}]; definition.Capacity != 4 {
+		t.Fatalf("Capacity = %d, want 4 (no oversubscription)", definition.Capacity)
 	}
 }
 

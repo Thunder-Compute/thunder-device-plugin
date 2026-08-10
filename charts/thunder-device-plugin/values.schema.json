@@ -4,7 +4,16 @@
   "description": "Values for the Thunder Compute DRA device plugin chart.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["namespace", "image", "operator", "thunder", "node", "nvidia", "dra", "deviceClass", "cdi"],
+  "required": [
+    "namespace",
+    "image",
+    "operator",
+    "thunder",
+    "node",
+    "nvidia",
+    "dra",
+    "cdi"
+  ],
   "definitions": {
     "labelKey": {
       "type": "string",
@@ -21,16 +30,34 @@
     "image": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["repository", "tag", "pullPolicy"],
+      "required": [
+        "repository",
+        "tag",
+        "pullPolicy"
+      ],
       "properties": {
-        "repository": { "type": "string", "minLength": 1 },
-        "tag": { "type": "string", "minLength": 1 },
-        "pullPolicy": { "enum": ["Always", "IfNotPresent", "Never"] }
+        "repository": {
+          "type": "string",
+          "minLength": 1
+        },
+        "tag": {
+          "type": "string",
+          "minLength": 1
+        },
+        "pullPolicy": {
+          "enum": [
+            "Always",
+            "IfNotPresent",
+            "Never"
+          ]
+        }
       }
     },
     "stringMap": {
       "type": "object",
-      "additionalProperties": { "type": "string" }
+      "additionalProperties": {
+        "type": "string"
+      }
     },
     "resources": {
       "type": "object",
@@ -39,26 +66,45 @@
     },
     "tolerations": {
       "type": "array",
-      "items": { "type": "object" }
+      "items": {
+        "type": "object"
+      }
     }
   },
   "properties": {
-    "nameOverride": { "type": "string" },
-    "fullnameOverride": { "type": "string" },
+    "nameOverride": {
+      "type": "string"
+    },
+    "fullnameOverride": {
+      "type": "string"
+    },
     "imagePullSecrets": {
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["name"],
-        "properties": { "name": { "type": "string", "minLength": 1 } }
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
       }
     },
     "namespace": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["create", "name"],
+      "required": [
+        "create",
+        "name"
+      ],
       "properties": {
-        "create": { "type": "boolean", "description": "Create the namespace as part of the release." },
+        "create": {
+          "type": "boolean",
+          "description": "Create the namespace as part of the release."
+        },
         "name": {
           "type": "string",
           "minLength": 1,
@@ -67,21 +113,42 @@
         }
       }
     },
-    "image": { "$ref": "#/definitions/image" },
+    "image": {
+      "$ref": "#/definitions/image"
+    },
     "operator": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["enabled", "image", "driverName", "resourceSliceNamePrefix", "reconcileInterval", "sharesPerGPU", "deviceClassPrefix", "extendedResourcePrefix"],
+      "required": [
+        "enabled",
+        "image",
+        "driverName",
+        "resourceSliceNamePrefix",
+        "reconcileInterval",
+        "deviceClassPrefix",
+        "extendedResourcePrefix"
+      ],
       "properties": {
-        "enabled": { "type": "boolean", "description": "Deploy the ResourceSlice inventory operator." },
-        "replicas": { "type": "integer", "minimum": 0 },
-        "image": { "$ref": "#/definitions/image" },
+        "enabled": {
+          "type": "boolean",
+          "description": "Deploy the ResourceSlice inventory operator."
+        },
+        "replicas": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "image": {
+          "$ref": "#/definitions/image"
+        },
         "driverName": {
           "type": "string",
           "minLength": 1,
           "description": "DRA driver name. Must match dra.driverName."
         },
-        "resourceSliceNamePrefix": { "type": "string", "minLength": 1 },
+        "resourceSliceNamePrefix": {
+          "type": "string",
+          "minLength": 1
+        },
         "reconcileInterval": {
           "type": "string",
           "pattern": "^[0-9]+(ns|us|ms|s|m|h)$",
@@ -97,23 +164,34 @@
           "pattern": "^$|^[a-z0-9]([-a-z0-9.]*[a-z0-9])?/[A-Za-z0-9][-A-Za-z0-9_.]*$",
           "description": "Domain-qualified prefix for per-GPU-type extended resources, e.g. thundercompute.com/gpu-. Empty disables the generated classes."
         },
-        "sharesPerGPU": {
-          "type": "integer",
-          "minimum": 1,
-          "description": "How many clients may share one GPU. 1 keeps GPUs exclusive and publishes no consumable capacity; above 1 needs Kubernetes 1.36+."
+        "podAnnotations": {
+          "$ref": "#/definitions/stringMap"
         },
-        "podAnnotations": { "$ref": "#/definitions/stringMap" },
-        "podLabels": { "$ref": "#/definitions/stringMap" },
-        "nodeSelector": { "$ref": "#/definitions/stringMap" },
-        "tolerations": { "$ref": "#/definitions/tolerations" },
-        "affinity": { "type": "object" },
-        "resources": { "$ref": "#/definitions/resources" }
+        "podLabels": {
+          "$ref": "#/definitions/stringMap"
+        },
+        "nodeSelector": {
+          "$ref": "#/definitions/stringMap"
+        },
+        "tolerations": {
+          "$ref": "#/definitions/tolerations"
+        },
+        "affinity": {
+          "type": "object"
+        },
+        "resources": {
+          "$ref": "#/definitions/resources"
+        }
       }
     },
     "thunder": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["secretName", "apiTokenKey", "apiURLKey"],
+      "required": [
+        "secretName",
+        "apiTokenKey",
+        "apiURLKey"
+      ],
       "properties": {
         "apiToken": {
           "type": "string",
@@ -128,15 +206,27 @@
           "type": "string",
           "description": "Reuse a pre-created Secret instead of creating one from apiToken."
         },
-        "secretName": { "type": "string", "minLength": 1 },
-        "apiTokenKey": { "type": "string", "minLength": 1 },
-        "apiURLKey": { "type": "string", "minLength": 1 }
+        "secretName": {
+          "type": "string",
+          "minLength": 1
+        },
+        "apiTokenKey": {
+          "type": "string",
+          "minLength": 1
+        },
+        "apiURLKey": {
+          "type": "string",
+          "minLength": 1
+        }
       }
     },
     "node": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["zoneLabel", "advertisedIPLabel"],
+      "required": [
+        "zoneLabel",
+        "advertisedIPLabel"
+      ],
       "properties": {
         "zone": {
           "type": "string",
@@ -146,26 +236,43 @@
           "type": "string",
           "description": "Pins the advertised IP for every node. Empty means advertisedIPLabel, then the node's own IP."
         },
-        "zoneLabel": { "$ref": "#/definitions/labelKey" },
-        "advertisedIPLabel": { "$ref": "#/definitions/labelKey" }
+        "zoneLabel": {
+          "$ref": "#/definitions/labelKey"
+        },
+        "advertisedIPLabel": {
+          "$ref": "#/definitions/labelKey"
+        }
       }
     },
     "nvidia": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["minDriverVersion", "libcudaPath", "libnvidiaMLPath", "nvidiaSMIPath"],
+      "required": [
+        "minDriverVersion",
+        "libcudaPath",
+        "libnvidiaMLPath",
+        "nvidiaSMIPath"
+      ],
       "properties": {
         "minDriverVersion": {
           "type": "string",
           "pattern": "^[0-9]+(\\.[0-9]+)*$",
           "description": "Minimum NVIDIA driver version the daemon will enroll."
         },
-        "libcudaPath": { "$ref": "#/definitions/absolutePath" },
-        "libnvidiaMLPath": { "$ref": "#/definitions/absolutePath" },
-        "nvidiaSMIPath": { "$ref": "#/definitions/absolutePath" }
+        "libcudaPath": {
+          "$ref": "#/definitions/absolutePath"
+        },
+        "libnvidiaMLPath": {
+          "$ref": "#/definitions/absolutePath"
+        },
+        "nvidiaSMIPath": {
+          "$ref": "#/definitions/absolutePath"
+        }
       }
     },
-    "hostRoot": { "$ref": "#/definitions/absolutePath" },
+    "hostRoot": {
+      "$ref": "#/definitions/absolutePath"
+    },
     "hostTargetPID": {
       "type": "string",
       "pattern": "^[0-9]+$",
@@ -174,9 +281,18 @@
     "dra": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["enabled", "driverName", "thunderClientNamespace", "kubeletPluginDir", "kubeletRegistrarDir"],
+      "required": [
+        "enabled",
+        "driverName",
+        "thunderClientNamespace",
+        "kubeletPluginDir",
+        "kubeletRegistrarDir"
+      ],
       "properties": {
-        "enabled": { "type": "boolean", "description": "Serve the DRA kubelet plugin." },
+        "enabled": {
+          "type": "boolean",
+          "description": "Serve the DRA kubelet plugin."
+        },
         "driverName": {
           "type": "string",
           "minLength": 1,
@@ -188,58 +304,72 @@
           "minLength": 1,
           "description": "Namespace the daemon writes ThunderClient resources into."
         },
-        "kubeletPluginDir": { "$ref": "#/definitions/absolutePath" },
-        "kubeletRegistrarDir": { "$ref": "#/definitions/absolutePath" }
-      }
-    },
-    "deviceClass": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["enabled", "name"],
-      "properties": {
-        "enabled": { "type": "boolean" },
-        "name": {
-          "type": "string",
-          "minLength": 1,
-          "pattern": "^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$",
-          "description": "DeviceClass name workloads reference."
+        "kubeletPluginDir": {
+          "$ref": "#/definitions/absolutePath"
         },
-        "extendedResourceName": {
-          "type": "string",
-          "pattern": "^$|^[a-z0-9]([-a-z0-9.]*[a-z0-9])?/[A-Za-z0-9]([-A-Za-z0-9_.]*[A-Za-z0-9])?$",
-          "description": "Extended resource name workloads may request instead of a ResourceClaim. Empty disables it. Needs Kubernetes 1.36+."
+        "kubeletRegistrarDir": {
+          "$ref": "#/definitions/absolutePath"
         }
       }
     },
     "cdi": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["specDir"],
+      "required": [
+        "specDir"
+      ],
       "properties": {
-        "specDir": { "$ref": "#/definitions/absolutePath" }
+        "specDir": {
+          "$ref": "#/definitions/absolutePath"
+        }
       }
     },
-    "nodeSelector": { "$ref": "#/definitions/stringMap" },
+    "nodeSelector": {
+      "$ref": "#/definitions/stringMap"
+    },
     "nodeLabelKeys": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["thunderNode"],
+      "required": [
+        "thunderNode"
+      ],
       "properties": {
-        "thunderNode": { "$ref": "#/definitions/labelKey" }
+        "thunderNode": {
+          "$ref": "#/definitions/labelKey"
+        }
       }
     },
-    "tolerations": { "$ref": "#/definitions/tolerations" },
-    "affinity": { "type": "object" },
-    "podAnnotations": { "$ref": "#/definitions/stringMap" },
-    "podLabels": { "$ref": "#/definitions/stringMap" },
-    "resources": { "$ref": "#/definitions/resources" },
+    "tolerations": {
+      "$ref": "#/definitions/tolerations"
+    },
+    "affinity": {
+      "type": "object"
+    },
+    "podAnnotations": {
+      "$ref": "#/definitions/stringMap"
+    },
+    "podLabels": {
+      "$ref": "#/definitions/stringMap"
+    },
+    "resources": {
+      "$ref": "#/definitions/resources"
+    },
     "tests": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["enabled", "image", "timeoutSeconds"],
+      "required": [
+        "enabled",
+        "image",
+        "timeoutSeconds"
+      ],
       "properties": {
-        "enabled": { "type": "boolean", "description": "Render the `helm test` hook." },
-        "image": { "$ref": "#/definitions/image" },
+        "enabled": {
+          "type": "boolean",
+          "description": "Render the `helm test` hook."
+        },
+        "image": {
+          "$ref": "#/definitions/image"
+        },
         "timeoutSeconds": {
           "type": "integer",
           "minimum": 1,
