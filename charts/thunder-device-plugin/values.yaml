@@ -18,6 +18,12 @@ thunder:
   secretName: thunder-api
   # -- Thunder API endpoint.
   apiURL: "https://registry.thundercompute.com"
+  # -- Telemetry collector written into each container's Thunder client config. Set to the staging collector when apiURL points at staging.
+  telemetryURL: "https://telemetry.thundercompute.com:2096"
+  # -- Host the Thunder client artifacts are downloaded from. The daemon fetches `libthunder.so` from here and stages it into every container that claims a GPU. Point at a staging artifact host to run unreleased client builds.
+  artifactBaseURL: "https://get.thundercompute.com"
+  # -- Installer the daemon reads the pinned libthunder.so digest out of. It is read, never executed. Empty derives it as `<artifactBaseURL>/install.sh`, which is almost always what you want.
+  installURL: ""
 
 ## operator
 

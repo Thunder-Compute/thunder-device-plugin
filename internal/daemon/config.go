@@ -27,6 +27,12 @@ const (
 	EnvThunderClientNS     = "THUNDER_CLIENT_NAMESPACE"
 	EnvKubeletPluginDir    = "KUBELET_PLUGIN_DIR"
 	EnvKubeletRegistrarDir = "KUBELET_REGISTRAR_DIR"
+	EnvThunderInstallURL   = "THUNDER_INSTALL_URL"
+	EnvThunderTelemetryURL = "THUNDER_TELEMETRY_URL"
+	EnvArtifactBaseURL     = "THUNDER_ARTIFACT_BASE_URL"
+	EnvLibthunderURL       = "LIBTHUNDER_URL"
+	EnvLibthunderSHA256    = "LIBTHUNDER_SHA256"
+	EnvCABundlePath        = "CA_BUNDLE_PATH"
 )
 
 const (
@@ -43,6 +49,13 @@ const (
 	DefaultThunderClientNS     = DefaultThunderClientNamespace
 	DefaultKubeletPluginDir    = "/var/lib/kubelet/plugins/" + DefaultDriverName
 	DefaultKubeletRegistrarDir = "/var/lib/kubelet/plugins_registry"
+	// DefaultThunderInstallURL is the installer the CDI hook reads the
+	// pinned libthunder.so digest out of. It is never executed.
+	DefaultThunderInstallURL   = "https://get.thundercompute.com/install.sh"
+	DefaultThunderTelemetryURL = "https://telemetry.thundercompute.com:2096"
+	// DefaultCABundlePath is the node trust store staged into containers
+	// that ship none of their own.
+	DefaultCABundlePath = "/etc/ssl/certs/ca-certificates.crt"
 )
 
 type Config struct {
@@ -68,6 +81,17 @@ type Config struct {
 	ThunderClientNS     string
 	KubeletPluginDir    string
 	KubeletRegistrarDir string
+	// ThunderInstallURL is read, not run: the CDI hook takes the pinned
+	// libthunder.so digest from it so a node stages the same build the
+	// installer would have.
+	ThunderInstallURL   string
+	ThunderTelemetryURL string
+	ArtifactBaseURL     string
+	// LibthunderURL and LibthunderSHA256 pin the library explicitly and
+	// skip the installer entirely.
+	LibthunderURL    string
+	LibthunderSHA256 string
+	CABundlePath     string
 }
 
 func ConfigFromEnv() (Config, error) {
@@ -114,6 +138,12 @@ func configFromLookup(lookup func(string) (string, bool)) (Config, error) {
 		ThunderClientNS:     optionalEnv(lookup, EnvThunderClientNS, DefaultThunderClientNS),
 		KubeletPluginDir:    optionalEnv(lookup, EnvKubeletPluginDir, DefaultKubeletPluginDir),
 		KubeletRegistrarDir: optionalEnv(lookup, EnvKubeletRegistrarDir, DefaultKubeletRegistrarDir),
+		ThunderInstallURL:   optionalEnv(lookup, EnvThunderInstallURL, DefaultThunderInstallURL),
+		ThunderTelemetryURL: optionalEnv(lookup, EnvThunderTelemetryURL, DefaultThunderTelemetryURL),
+		ArtifactBaseURL:     optionalEnv(lookup, EnvArtifactBaseURL, ""),
+		LibthunderURL:       optionalEnv(lookup, EnvLibthunderURL, ""),
+		LibthunderSHA256:    optionalEnv(lookup, EnvLibthunderSHA256, ""),
+		CABundlePath:        optionalEnv(lookup, EnvCABundlePath, DefaultCABundlePath),
 	}, nil
 }
 

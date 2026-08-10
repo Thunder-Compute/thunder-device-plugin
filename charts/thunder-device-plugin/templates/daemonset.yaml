@@ -46,6 +46,12 @@ spec:
               value: {{ .Values.node.advertisedIPLabel | quote }}
             - name: THUNDER_API_URL
               value: {{ .Values.thunder.apiURL | quote }}
+            - name: THUNDER_TELEMETRY_URL
+              value: {{ .Values.thunder.telemetryURL | quote }}
+            - name: THUNDER_ARTIFACT_BASE_URL
+              value: {{ .Values.thunder.artifactBaseURL | quote }}
+            - name: THUNDER_INSTALL_URL
+              value: {{ .Values.thunder.installURL | default (printf "%s/install.sh" (trimSuffix "/" .Values.thunder.artifactBaseURL)) | quote }}
             - name: MIN_DRIVER_VERSION
               value: {{ .Values.nvidia.minDriverVersion | quote }}
             - name: DRA_DRIVER_NAME

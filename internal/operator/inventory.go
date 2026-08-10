@@ -81,6 +81,13 @@ func buildDesiredPools(ctx context.Context, inventory ThunderAPI, logger *slog.L
 			return nil, fmt.Errorf("list thunder clients in zone %q: %w", zoneID, err)
 		}
 		for _, client := range clients {
+			// A decommissioned client is a revoked enrollment, not live
+			// demand. Counting it would hold the zone's published capacity up
+			// forever, because clientCapacity is a floor: every pod that ever
+			// ran would keep its GPU reserved long after it exited.
+			if client.DecommissionedAt != nil {
+				continue
+			}
 			addGPUCount(clientCounts, client.GPUType, int64(client.GPUCount))
 		}
 

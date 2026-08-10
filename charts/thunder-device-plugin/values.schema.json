@@ -134,6 +134,21 @@
         "apiURL": {
           "type": "string",
           "pattern": "^https?://"
+        },
+        "telemetryURL": {
+          "type": "string",
+          "pattern": "^https?://",
+          "description": "Telemetry collector written into each container's Thunder client config."
+        },
+        "installURL": {
+          "type": "string",
+          "pattern": "^(https?://.*)?$",
+          "description": "Installer the daemon reads the pinned libthunder.so digest from. Empty derives <artifactBaseURL>/install.sh."
+        },
+        "artifactBaseURL": {
+          "type": "string",
+          "pattern": "^https?://",
+          "description": "Host the Thunder client artifacts (libthunder.so, install.sh) are downloaded from."
         }
       }
     },

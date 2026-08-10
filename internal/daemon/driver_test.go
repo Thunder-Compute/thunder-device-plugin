@@ -198,6 +198,7 @@ type fakeTokenIssuer struct {
 	minted         int
 	lastAllocation Allocation
 	revoked        []string
+	revokedClients []string
 }
 
 func (f *fakeTokenIssuer) Mint(ctx context.Context, allocation Allocation) (string, string, time.Time, error) {
@@ -208,6 +209,11 @@ func (f *fakeTokenIssuer) Mint(ctx context.Context, allocation Allocation) (stri
 
 func (f *fakeTokenIssuer) Revoke(ctx context.Context, tokenID string) error {
 	f.revoked = append(f.revoked, tokenID)
+	return nil
+}
+
+func (f *fakeTokenIssuer) RevokeClient(ctx context.Context, clientID string) error {
+	f.revokedClients = append(f.revokedClients, clientID)
 	return nil
 }
 
@@ -242,8 +248,9 @@ func (s *memoryClientStore) Delete(ctx context.Context, claimUID types.UID) erro
 }
 
 type memoryCDIStore struct {
-	created map[string]bool
-	err     error
+	created  map[string]bool
+	err      error
+	clientID string
 }
 
 func (s *memoryCDIStore) Create(ctx context.Context, allocation Allocation, token string) (string, error) {
@@ -256,6 +263,10 @@ func (s *memoryCDIStore) Create(ctx context.Context, allocation Allocation, toke
 	name := DefaultCDIKind + "=" + ThunderClientName(allocation.ClaimUID)
 	s.created[name] = true
 	return name, nil
+}
+
+func (s *memoryCDIStore) StagedClientID(qualifiedName string) string {
+	return s.clientID
 }
 
 func (s *memoryCDIStore) Remove(ctx context.Context, qualifiedName string) error {
