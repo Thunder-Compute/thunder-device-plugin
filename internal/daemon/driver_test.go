@@ -67,7 +67,7 @@ func TestPrepareResourceClaimsMintsTokenCreatesClientAndReturnsCDI(t *testing.T)
 	if client.EnrollmentTokenID != "token-id-1" || client.CDIName == "" {
 		t.Fatalf("ThunderClient = %#v", client)
 	}
-	if client.GuestNamespace != "default" || client.GuestConfigMap != "claim-a-thunder-configmap" || client.GuestSecret != "claim-a-thunder-secret" {
+	if client.GuestNamespace != "default" || client.GuestSecret != "claim-a-thunder-setup" {
 		t.Fatalf("ThunderClient guest artifacts = %#v", client)
 	}
 	if client.NodeName != "node-a" || client.Consumer.Namespace != "default" || client.Consumer.Name != "pod-a" {
@@ -114,14 +114,13 @@ func TestUnprepareResourceClaimsRevokesTokenAndDeletesClient(t *testing.T) {
 		EnrollmentTokenID: "token-id-1",
 		CDIName:           "thundercompute.com/gpu=claim-11111111-1111-1111-1111-111111111111",
 		GuestNamespace:    "default",
-		GuestConfigMap:    "claim-a-thunder-configmap",
-		GuestSecret:       "claim-a-thunder-secret",
+		GuestSecret:       "claim-a-thunder-setup",
 	}); err != nil {
 		t.Fatal(err)
 	}
 	tokens := &fakeTokenIssuer{}
 	cdi := &memoryCDIStore{created: map[string]bool{"thundercompute.com/gpu=claim-11111111-1111-1111-1111-111111111111": true}}
-	guest := &memoryGuestStore{created: map[string]bool{"default/claim-a-thunder-configmap": true, "default/claim-a-thunder-secret": true}}
+	guest := &memoryGuestStore{created: map[string]bool{"default/claim-a-thunder-setup": true}}
 	driver := &Driver{Tokens: tokens, Clients: clients, CDI: cdi, Guest: guest}
 
 	result, err := driver.UnprepareResourceClaims(ctx, []kubeletplugin.NamespacedObject{{NamespacedName: types.NamespacedName{Namespace: "default", Name: "claim-a"}, UID: claimUID}})
@@ -140,7 +139,7 @@ func TestUnprepareResourceClaimsRevokesTokenAndDeletesClient(t *testing.T) {
 	if cdi.created["thundercompute.com/gpu=claim-11111111-1111-1111-1111-111111111111"] {
 		t.Fatalf("CDI device still exists")
 	}
-	if guest.created["default/claim-a-thunder-configmap"] || guest.created["default/claim-a-thunder-secret"] {
+	if guest.created["default/claim-a-thunder-setup"] {
 		t.Fatalf("guest artifacts still exist: %#v", guest.created)
 	}
 }
@@ -292,11 +291,9 @@ func (s *memoryGuestStore) Create(ctx context.Context, allocation Allocation, to
 		s.created = map[string]bool{}
 	}
 	artifacts := GuestArtifacts{
-		Namespace:     allocation.ClaimNamespace,
-		ConfigMapName: ThunderGuestConfigMapName(allocation.ClaimName),
-		SecretName:    ThunderGuestSecretName(allocation.ClaimName),
+		Namespace:  allocation.ClaimNamespace,
+		SecretName: ThunderGuestSetupSecretName(allocation.ClaimName),
 	}
-	s.created[artifacts.Namespace+"/"+artifacts.ConfigMapName] = true
 	s.created[artifacts.Namespace+"/"+artifacts.SecretName] = true
 	return artifacts, nil
 }
@@ -306,7 +303,6 @@ func (s *memoryGuestStore) Remove(ctx context.Context, artifacts GuestArtifacts)
 		return s.err
 	}
 	if s.created != nil {
-		delete(s.created, artifacts.Namespace+"/"+artifacts.ConfigMapName)
 		delete(s.created, artifacts.Namespace+"/"+artifacts.SecretName)
 	}
 	return nil

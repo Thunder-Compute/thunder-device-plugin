@@ -145,33 +145,32 @@ func TestKubernetesGuestConfigStoreCreateWritesConfigMapAndSecret(t *testing.T) 
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	if artifacts.Namespace != "default" || artifacts.ConfigMapName != "claim-a-thunder-configmap" || artifacts.SecretName != "claim-a-thunder-secret" {
+	if artifacts.Namespace != "default" || artifacts.SecretName != "claim-a-thunder-setup" {
 		t.Fatalf("artifacts = %#v", artifacts)
-	}
-
-	configMap, err := kube.CoreV1().ConfigMaps("default").Get(ctx, artifacts.ConfigMapName, metav1.GetOptions{})
-	if err != nil {
-		t.Fatalf("get ConfigMap: %v", err)
-	}
-	script := configMap.Data[ThunderGuestInstallScriptKey]
-	for _, want := range []string{
-		"cuda-keyring_1.1-1_all.deb",
-		"nvidia-driver-pinning-610.43.02",
-		"cuda-drivers",
-		`echo install "${THUNDER_ENROLLMENT_TOKEN}"`,
-	} {
-		if !strings.Contains(script, want) {
-			t.Fatalf("script missing %q:\n%s", want, script)
-		}
-	}
-	if strings.Contains(script, "raw-token-value") {
-		t.Fatalf("script contains raw token: %s", script)
 	}
 
 	secret, err := kube.CoreV1().Secrets("default").Get(ctx, artifacts.SecretName, metav1.GetOptions{})
 	if err != nil {
 		t.Fatalf("get Secret: %v", err)
 	}
+	script := string(secret.Data[ThunderGuestInstallScriptKey])
+	if !strings.Contains(script, `echo install "${THUNDER_ENROLLMENT_TOKEN}"`) {
+		t.Fatalf("script does not run the install command:\n%s", script)
+	}
+	// The guest becomes a Thunder client, which needs no NVIDIA driver: the
+	// driver lives on the GPU server, and libthunder carries CUDA to it. The
+	// script stays distribution agnostic and adds nothing to VM boot time.
+	for _, unwanted := range []string{
+		"cuda-keyring", "nvidia-driver-pinning", "cuda-drivers", "apt-get", "dpkg",
+	} {
+		if strings.Contains(script, unwanted) {
+			t.Fatalf("script installs %q, which a Thunder client does not need:\n%s", unwanted, script)
+		}
+	}
+	if strings.Contains(script, "raw-token-value") {
+		t.Fatalf("script contains raw token: %s", script)
+	}
+
 	if got := string(secret.Data[ThunderGuestSecretTokenKey]); got != "raw-token-value" {
 		t.Fatalf("secret token = %q", got)
 	}

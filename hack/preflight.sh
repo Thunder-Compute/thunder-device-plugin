@@ -7,7 +7,7 @@
 # nothing except a server dry-run object that is never persisted.
 #
 # Verifies the DRA APIs, that consumable capacity survives the API server, node
-# labels, and (optionally) the KubeVirt GPUsWithDRA gate.
+# labels, and (optionally) KubeVirt readiness for VM workloads.
 #
 # Usage: hack/preflight.sh [--with-vm] [--namespace NS]
 
@@ -114,14 +114,9 @@ if "${WITH_VM}"; then
   step "KubeVirt"
   if api_resource_exists virtualmachines; then
     check_pass "KubeVirt is installed"
-    gates="$(kube -n kubevirt get kubevirt kubevirt \
-      -o jsonpath='{.spec.configuration.developerConfiguration.featureGates}' 2>/dev/null || true)"
-    if [[ "${gates}" == *GPUsWithDRA* ]]; then
-      check_pass "GPUsWithDRA feature gate is enabled"
-    else
-      check_fail "GPUsWithDRA feature gate is enabled" \
-        "kubectl -n kubevirt patch kubevirt kubevirt --type merge -p '{\"spec\":{\"configuration\":{\"developerConfiguration\":{\"featureGates\":[\"GPUsWithDRA\"]}}}}'"
-    fi
+    # No feature gate is required. A Thunder GPU is network attached, so a VM
+    # never asks KubeVirt for a passthrough device: it declares the claim, and
+    # the guest reaches the GPU through the client it installs itself.
   else
     check_fail "KubeVirt is installed" "install KubeVirt or drop --with-vm"
   fi

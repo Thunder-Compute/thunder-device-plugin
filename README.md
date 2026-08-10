@@ -194,20 +194,16 @@ helm install thunder-pod charts/tests/pod --set gpu.type=A6000 --set gpu.count=2
 
 ### KubeVirt VMs
 
-VMs need a **stable** `ResourceClaim`, not a template, because the claim name
-determines the guest artifacts the daemon creates:
+A VM declares a `ResourceClaim` with a name you choose. When the VM starts, the
+daemon writes a Secret named after that claim:
 
 ```text
-<claim-name>-thunder-configmap   # install-thunder-client.sh
-<claim-name>-thunder-secret      # enrollment-token
+<claim-name>-thunder-setup   # enrollment-token, install-thunder-client.sh
 ```
 
-Enable the KubeVirt gate once:
-
-```bash
-kubectl -n kubevirt patch kubevirt kubevirt --type merge \
-  -p '{"spec":{"configuration":{"developerConfiguration":{"featureGates":["GPUsWithDRA"]}}}}'
-```
+The VM mounts it over virtiofs and cloud-init runs the script, which installs
+the Thunder client into the guest. The GPU is reached over the network from
+there, so the VM declares no GPU device.
 
 ```yaml
 apiVersion: resource.k8s.io/v1
@@ -240,32 +236,25 @@ spec:
             memory: 1Gi
         devices:
           filesystems:
-            - name: thunder-config
-              virtiofs: {}
-            - name: thunder-secret
+            - name: thunder-setup
               virtiofs: {}
           disks:
             - name: cloudinitdisk
               disk:
                 bus: virtio
       volumes:
-        - name: thunder-config
-          configMap:
-            name: thunder-vm-claim-thunder-configmap
-            optional: true
-        - name: thunder-secret
+        - name: thunder-setup
           secret:
-            secretName: thunder-vm-claim-thunder-secret
+            secretName: thunder-vm-claim-thunder-setup
             optional: true
         - name: cloudinitdisk
           cloudInitNoCloud:
             userData: |
               #cloud-config
               mounts:
-                - [ thunder-config, /mnt/thunder-config, virtiofs ]
-                - [ thunder-secret, /mnt/thunder-secret, virtiofs ]
+                - [ thunder-setup, /mnt/thunder-setup, virtiofs ]
               runcmd:
-                - [ bash, /mnt/thunder-config/install-thunder-client.sh ]
+                - [ bash, /mnt/thunder-setup/install-thunder-client.sh ]
 ```
 
 Full VM with root disk and networking:

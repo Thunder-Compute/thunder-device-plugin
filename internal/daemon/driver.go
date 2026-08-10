@@ -97,7 +97,6 @@ type ThunderClient struct {
 	CDIName           string
 	EnrollmentTokenID string
 	GuestNamespace    string
-	GuestConfigMap    string
 	GuestSecret       string
 	CreatedAt         time.Time
 	UpdatedAt         time.Time
@@ -127,9 +126,8 @@ type CDIDeviceStore interface {
 }
 
 type GuestArtifacts struct {
-	Namespace     string
-	ConfigMapName string
-	SecretName    string
+	Namespace  string
+	SecretName string
 }
 
 type GuestConfigStore interface {
@@ -211,7 +209,6 @@ func (d *Driver) prepareOne(ctx context.Context, claim *resourcev1.ResourceClaim
 	client.CDIName = cdiName
 	client.EnrollmentTokenID = tokenID
 	client.GuestNamespace = guestArtifacts.Namespace
-	client.GuestConfigMap = guestArtifacts.ConfigMapName
 	client.GuestSecret = guestArtifacts.SecretName
 	if err := d.Clients.Upsert(ctx, client); err != nil {
 		_ = d.CDI.Remove(ctx, cdiName)
@@ -265,9 +262,8 @@ func (d *Driver) unprepareOne(ctx context.Context, claim kubeletplugin.Namespace
 	}
 
 	if err := d.Guest.Remove(ctx, GuestArtifacts{
-		Namespace:     firstNonEmpty(client.GuestNamespace, client.ClaimNamespace, claim.Namespace),
-		ConfigMapName: client.GuestConfigMap,
-		SecretName:    client.GuestSecret,
+		Namespace:  firstNonEmpty(client.GuestNamespace, client.ClaimNamespace, claim.Namespace),
+		SecretName: client.GuestSecret,
 	}); err != nil {
 		return fmt.Errorf("remove guest Thunder artifacts: %w", err)
 	}

@@ -171,18 +171,17 @@ func thunderClientObject(client ThunderClient, namespace string) *unstructured.U
 			"gpuCount":       client.GPUCount,
 		},
 		"status": map[string]any{
-			"nodeName":           client.NodeName,
-			"zone":               client.Zone,
-			"requestName":        client.RequestName,
-			"poolName":           client.PoolName,
-			"deviceName":         client.DeviceName,
-			"cdiName":            client.CDIName,
-			"enrollmentTokenID":  client.EnrollmentTokenID,
-			"guestNamespace":     client.GuestNamespace,
-			"guestConfigMapName": client.GuestConfigMap,
-			"guestSecretName":    client.GuestSecret,
-			"createdAt":          client.CreatedAt.Format(time.RFC3339),
-			"updatedAt":          client.UpdatedAt.Format(time.RFC3339),
+			"nodeName":          client.NodeName,
+			"zone":              client.Zone,
+			"requestName":       client.RequestName,
+			"poolName":          client.PoolName,
+			"deviceName":        client.DeviceName,
+			"cdiName":           client.CDIName,
+			"enrollmentTokenID": client.EnrollmentTokenID,
+			"guestNamespace":    client.GuestNamespace,
+			"guestSecretName":   client.GuestSecret,
+			"createdAt":         client.CreatedAt.Format(time.RFC3339),
+			"updatedAt":         client.UpdatedAt.Format(time.RFC3339),
 		},
 	}}
 	if client.ShareID != nil {
@@ -219,7 +218,6 @@ func thunderClientFromObject(obj *unstructured.Unstructured) *ThunderClient {
 	client.CDIName = nestedString(obj, "status", "cdiName")
 	client.EnrollmentTokenID = nestedString(obj, "status", "enrollmentTokenID")
 	client.GuestNamespace = nestedString(obj, "status", "guestNamespace")
-	client.GuestConfigMap = nestedString(obj, "status", "guestConfigMapName")
 	client.GuestSecret = nestedString(obj, "status", "guestSecretName")
 	if shareID := nestedString(obj, "status", "shareID"); shareID != "" {
 		uid := types.UID(shareID)
@@ -268,7 +266,7 @@ func stringFromMap(values map[string]any, key string) string {
 const (
 	ThunderGuestInstallScriptKey = "install-thunder-client.sh"
 	ThunderGuestSecretTokenKey   = "enrollment-token"
-	ThunderGuestSecretMountPath  = "/mnt/thunder-secret/enrollment-token"
+	ThunderGuestTokenPath        = "/mnt/thunder-setup/enrollment-token"
 )
 
 type KubernetesGuestConfigStore struct {
@@ -292,39 +290,25 @@ func (s *KubernetesGuestConfigStore) Create(ctx context.Context, allocation Allo
 	}
 
 	artifacts := GuestArtifacts{
-		Namespace:     namespace,
-		ConfigMapName: ThunderGuestConfigMapName(allocation.ClaimName),
-		SecretName:    ThunderGuestSecretName(allocation.ClaimName),
-	}
-	labels := guestArtifactLabels(allocation)
-
-	configMap := &corev1.ConfigMap{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      artifacts.ConfigMapName,
-			Namespace: artifacts.Namespace,
-			Labels:    labels,
-		},
-		Data: map[string]string{
-			ThunderGuestInstallScriptKey: thunderGuestInstallScript(installCommand),
-		},
-	}
-	if err := upsertConfigMap(ctx, s.Client, configMap); err != nil {
-		return GuestArtifacts{}, err
+		Namespace:  namespace,
+		SecretName: ThunderGuestSetupSecretName(allocation.ClaimName),
 	}
 
+	// The token and the script that spends it travel together in one Secret,
+	// so a VM mounts one filesystem rather than two.
 	secret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      artifacts.SecretName,
 			Namespace: artifacts.Namespace,
-			Labels:    labels,
+			Labels:    guestArtifactLabels(allocation),
 		},
 		Type: corev1.SecretTypeOpaque,
 		Data: map[string][]byte{
-			ThunderGuestSecretTokenKey: []byte(token),
+			ThunderGuestSecretTokenKey:   []byte(token),
+			ThunderGuestInstallScriptKey: []byte(thunderGuestInstallScript(installCommand)),
 		},
 	}
 	if err := upsertSecret(ctx, s.Client, secret); err != nil {
-		_ = deleteConfigMap(ctx, s.Client, artifacts.Namespace, artifacts.ConfigMapName)
 		return GuestArtifacts{}, err
 	}
 	return artifacts, nil
@@ -338,21 +322,16 @@ func (s *KubernetesGuestConfigStore) Remove(ctx context.Context, artifacts Guest
 	if namespace == "" {
 		return nil
 	}
-	if err := deleteConfigMap(ctx, s.Client, namespace, artifacts.ConfigMapName); err != nil {
-		return err
-	}
 	if err := deleteSecret(ctx, s.Client, namespace, artifacts.SecretName); err != nil {
 		return err
 	}
 	return nil
 }
 
-func ThunderGuestConfigMapName(claimName string) string {
-	return thunderGuestArtifactName(claimName, "thunder-configmap")
-}
-
-func ThunderGuestSecretName(claimName string) string {
-	return thunderGuestArtifactName(claimName, "thunder-secret")
+// ThunderGuestSetupSecretName is the Secret a VM mounts to set itself up as
+// a Thunder client.
+func ThunderGuestSetupSecretName(claimName string) string {
+	return thunderGuestArtifactName(claimName, "thunder-setup")
 }
 
 func thunderGuestArtifactName(claimName string, suffix string) string {
@@ -380,6 +359,13 @@ func guestArtifactLabels(allocation Allocation) map[string]string {
 	}
 }
 
+// thunderGuestInstallScript is what a VM guest runs to become a Thunder client.
+//
+// It installs the Thunder client and nothing else. A client does not need an
+// NVIDIA driver: libthunder intercepts CUDA in the guest and carries it to a
+// GPU server over the network, and the driver lives on that server. Installing
+// one here would pin the guest to a distribution and a driver version, and add
+// a kernel module build to every VM boot, for something no workload uses.
 func thunderGuestInstallScript(installCommand string) string {
 	installCommand = strings.TrimSpace(installCommand)
 	if installCommand == "" {
@@ -395,31 +381,8 @@ if [[ ! -s "${TOKEN_FILE}" ]]; then
 fi
 export %s="$(cat "${TOKEN_FILE}")"
 
-wget -O cuda-keyring_1.1-1_all.deb https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb
-sudo dpkg -i cuda-keyring_1.1-1_all.deb
-sudo apt-get update
-sudo apt-get install -y nvidia-driver-pinning-610.43.02
-sudo apt-get install -y cuda-drivers
-
 %s
-`, ThunderGuestSecretMountPath, ThunderEnrollmentTokenEnv, installCommand)
-}
-
-func upsertConfigMap(ctx context.Context, client kubernetes.Interface, desired *corev1.ConfigMap) error {
-	resource := client.CoreV1().ConfigMaps(desired.Namespace)
-	current, err := resource.Get(ctx, desired.Name, metav1.GetOptions{})
-	if apierrors.IsNotFound(err) {
-		_, err = resource.Create(ctx, desired, metav1.CreateOptions{})
-		return err
-	}
-	if err != nil {
-		return err
-	}
-	updated := current.DeepCopy()
-	updated.Labels = desired.Labels
-	updated.Data = desired.Data
-	_, err = resource.Update(ctx, updated, metav1.UpdateOptions{})
-	return err
+`, ThunderGuestTokenPath, ThunderEnrollmentTokenEnv, installCommand)
 }
 
 func upsertSecret(ctx context.Context, client kubernetes.Interface, desired *corev1.Secret) error {
@@ -437,18 +400,6 @@ func upsertSecret(ctx context.Context, client kubernetes.Interface, desired *cor
 	updated.Type = desired.Type
 	updated.Data = desired.Data
 	_, err = resource.Update(ctx, updated, metav1.UpdateOptions{})
-	return err
-}
-
-func deleteConfigMap(ctx context.Context, client kubernetes.Interface, namespace string, name string) error {
-	name = strings.TrimSpace(name)
-	if name == "" {
-		return nil
-	}
-	err := client.CoreV1().ConfigMaps(namespace).Delete(ctx, name, metav1.DeleteOptions{})
-	if apierrors.IsNotFound(err) {
-		return nil
-	}
 	return err
 }
 

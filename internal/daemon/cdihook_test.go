@@ -615,9 +615,9 @@ func TestThunderClientNameFallsBackToTheClaim(t *testing.T) {
 	}
 }
 
-// Revoking the enrollment token does not revoke the client it was exchanged
-// for: once spent, they are separate objects in Thunder. Without this the
-// client survives its pod and keeps counting against the zone's capacity.
+// A client and the enrollment token it was exchanged for are separate objects
+// in Thunder, so teardown revokes both. A client left behind would keep
+// counting against the zone's capacity after its pod is gone.
 func TestUnprepareRevokesTheClientTheHookEnrolled(t *testing.T) {
 	specDir := t.TempDir()
 	store := NewFileCDIDeviceStore(specDir)
@@ -817,5 +817,59 @@ func TestRemoveWaitsForAnInFlightHook(t *testing.T) {
 	}
 	if _, err := os.Stat(stateDir); !os.IsNotExist(err) {
 		t.Fatalf("claim state survived Remove: %v", err)
+	}
+}
+
+// Some images, virt-launcher among them, have /etc/ssl/certs as a symlink that
+// does not resolve inside their own rootfs. Staging a CA bundle is best effort,
+// so such an image still starts: the library and config are what matter, and a
+// KubeVirt guest installs its own client and never reads this copy.
+func TestRunCDIHookStartsContainersWhoseCertDirIsASymlink(t *testing.T) {
+	fixture := newThunderFixture(t)
+	stateDir := filepath.Join(t.TempDir(), "claim-abc")
+	bundle := t.TempDir()
+	stageToken(t, stateDir, "tr_secret")
+
+	// Lay out the rootfs the way the failure was seen: /etc/ssl/certs is a
+	// symlink whose target does not exist inside the container.
+	rootfs := filepath.Join(bundle, "rootfs")
+	if err := os.MkdirAll(filepath.Join(rootfs, "etc/ssl"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("/usr/lib/ssl/certs", filepath.Join(rootfs, "etc/ssl/certs")); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := RunCDIHook(context.Background(), fixture.hookOptions(stateDir, t.TempDir()), ociStateStdin(t, bundle)); err != nil {
+		t.Fatalf("RunCDIHook refused a container with a symlinked cert dir: %v", err)
+	}
+
+	// The library and config still land — those are what the hook is for.
+	if _, err := os.Stat(filepath.Join(rootfs, ThunderGuestDir, "libthunder.so")); err != nil {
+		t.Fatalf("libthunder.so was not staged: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(rootfs, ThunderGuestDir, thunderConfigFile)); err != nil {
+		t.Fatalf("config.json was not staged: %v", err)
+	}
+	// And the image's own symlink is untouched.
+	info, err := os.Lstat(filepath.Join(rootfs, "etc/ssl/certs"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		t.Fatal("the image's /etc/ssl/certs symlink was replaced")
+	}
+}
+
+// A node with no trust store of its own must also not block containers.
+func TestRunCDIHookStartsContainersWhenTheNodeHasNoCABundle(t *testing.T) {
+	fixture := newThunderFixture(t)
+	stateDir := filepath.Join(t.TempDir(), "claim-abc")
+	stageToken(t, stateDir, "tr_secret")
+
+	opts := fixture.hookOptions(stateDir, t.TempDir())
+	opts.CABundlePath = filepath.Join(t.TempDir(), "no-such-bundle.crt")
+	if err := RunCDIHook(context.Background(), opts, ociStateStdin(t, t.TempDir())); err != nil {
+		t.Fatalf("RunCDIHook failed with no CA bundle on the node: %v", err)
 	}
 }

@@ -116,7 +116,7 @@ make preflight
 
 Checks a cluster you already have: DRA APIs served, extended resource mapping
 preserved by the API server, Thunder node labels, and — with `--with-vm` —
-KubeVirt and its `GPUsWithDRA` gate. It creates nothing and is safe to run
+KubeVirt and CDI. It creates nothing and is safe to run
 against production.
 
 ## Environment
