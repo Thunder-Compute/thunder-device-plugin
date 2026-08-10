@@ -6,8 +6,7 @@ and KubeVirt VMs through Dynamic Resource Allocation (DRA).
 Workloads request a GPU either as an extended resource named after the model
 (`thundercompute.com/gpu-a6000: 2`) or through a `ResourceClaim` naming the
 model's `DeviceClass`. Either way the GPUs come from the zone pool, not from
-node-local `allocatable`, and every request names a model — there is no "any
-GPU" form.
+node-local `allocatable`.
 
 The chart deploys two components:
 
@@ -29,9 +28,7 @@ kubectl -n thunder-system create secret generic thunder-api \
   --from-literal=THUNDER_API_TOKEN='<token>'
 
 helm upgrade --install thunder-device-plugin charts/thunder-device-plugin \
-  --namespace thunder-system \
-  --set namespace.create=false \
-  --set thunder.existingSecret=thunder-api
+  --namespace thunder-system --create-namespace
 
 helm test thunder-device-plugin --namespace thunder-system
 ```
@@ -47,22 +44,19 @@ helm test thunder-device-plugin --namespace thunder-system
 
 ## Installing
 
-The chart needs a Thunder API token. Prefer a pre-created Secret so the token
-does not end up in the Helm release history:
+The chart never stores the Thunder API token: create a Secret holding it first,
+and point the chart at it. It goes into the release namespace.
 
 ```bash
+kubectl -n thunder-system create secret generic thunder-api \
+  --from-literal=THUNDER_API_TOKEN='<token>'
+
 helm upgrade --install thunder-device-plugin charts/thunder-device-plugin \
-  --namespace thunder-system --create-namespace \
-  --set thunder.existingSecret=thunder-api
+  --namespace thunder-system --create-namespace
 ```
 
-To let the chart create the Secret instead:
-
-```bash
-helm upgrade --install thunder-device-plugin charts/thunder-device-plugin \
-  --namespace thunder-system --create-namespace \
-  --set-file thunder.apiToken=/path/to/token
-```
+Point at a differently named Secret with `--set thunder.secretName=<name>`. It
+must hold the token under the key `THUNDER_API_TOKEN`.
 
 ### CRDs
 
@@ -101,94 +95,72 @@ typos and wrong types fail at install time rather than silently doing nothing.
 
 | Key | Type | Default | Description |
 | --- | --- | --- | --- |
-| `namespace.create` | bool | `true` | Create the namespace as part of the release |
-| `namespace.name` | string | `thunder-system` | Namespace both components run in |
-| `image.repository` | string | `thundercompute/thunder-device-plugin-daemon` | Daemon image |
-| `image.tag` | string | `latest` | Daemon image tag |
-| `image.pullPolicy` | string | `IfNotPresent` | Daemon image pull policy |
+| `driverName` | string | `thundercompute.com` | DRA driver name. Identifies the driver to the scheduler and kubelet and names its CDI devices |
 | `imagePullSecrets` | list | `[]` | Pull secrets for both components |
-| `nameOverride` | string | `""` | Override the chart name |
+| `nameOverride` | string | `""` | Override the chart name used in resource names |
 | `fullnameOverride` | string | `""` | Override the generated resource names |
-
-### Operator
-
-| Key | Type | Default | Description |
-| --- | --- | --- | --- |
-| `operator.enabled` | bool | `true` | Deploy the inventory operator |
-| `operator.replicas` | int | `1` | Operator replica count |
-| `operator.image.repository` | string | `thundercompute/thunder-dra-operator` | Operator image |
-| `operator.image.tag` | string | `latest` | Operator image tag |
-| `operator.image.pullPolicy` | string | `IfNotPresent` | Operator image pull policy |
-| `operator.driverName` | string | `thundercompute.com` | DRA driver name; must match `dra.driverName` |
-| `operator.resourceSliceNamePrefix` | string | `thunder` | Prefix for generated `ResourceSlice` names |
-| `operator.reconcileInterval` | string | `60s` | Go duration between inventory reconciles |
-| `operator.deviceClassPrefix` | string | `thunder-gpu-` | Name prefix for the generated per-GPU-type `DeviceClass`es |
-| `operator.extendedResourcePrefix` | string | `thundercompute.com/gpu-` | Prefix for per-GPU-type extended resources, so `resources.limits: thundercompute.com/gpu-a6000: 2` pins the model. `""` disables the generated classes |
-| `operator.podAnnotations` | object | `{}` | Extra operator pod annotations |
-| `operator.podLabels` | object | `{}` | Extra operator pod labels |
-| `operator.nodeSelector` | object | `{}` | Operator node selector |
-| `operator.tolerations` | list | `[]` | Operator tolerations |
-| `operator.affinity` | object | `{}` | Operator affinity |
-| `operator.resources` | object | `{}` | Operator resource requests and limits |
 
 ### Thunder API
 
 | Key | Type | Default | Description |
 | --- | --- | --- | --- |
-| `thunder.apiToken` | string | `""` | API token. Required unless `existingSecret` is set |
-| `thunder.apiURL` | string | `https://api.thundercompute.com:2096` | Thunder API base URL |
-| `thunder.existingSecret` | string | `""` | Reuse a pre-created Secret instead of creating one |
-| `thunder.secretName` | string | `thunder-api` | Name of the Secret the chart creates |
-| `thunder.apiTokenKey` | string | `THUNDER_API_TOKEN` | Secret key holding the token |
-| `thunder.apiURLKey` | string | `THUNDER_API_URL` | Secret key holding the API URL |
+| `thunder.secretName` | string | `thunder-api` | Existing Secret holding the API token under `THUNDER_API_TOKEN`. Must exist before install |
+| `thunder.apiURL` | string | `https://registry.thundercompute.com` | Thunder API endpoint |
 
-### Node identity
+### Operator
 
 | Key | Type | Default | Description |
 | --- | --- | --- | --- |
-| `node.zone` | string | `""` | Pins the Thunder zone for every node; empty resolves per node from `zoneLabel` |
-| `node.advertisedIP` | string | `""` | Pins the advertised IP for every node; empty resolves per node |
-| `node.zoneLabel` | string | `topology.kubernetes.io/zone` | Node label carrying the zone |
-| `node.advertisedIPLabel` | string | `thundercompute.com/advertised-ip` | Per-node advertised IP override |
+| `operator.enabled` | bool | `true` | Deploy the operator. Without it no GPUs are advertised |
+| `operator.image.repository` | string | `thundercompute/thunder-dra-operator` | Operator image |
+| `operator.image.tag` | string | `latest` | Operator image tag |
+| `operator.image.pullPolicy` | string | `IfNotPresent` | Operator image pull policy |
+| `operator.reconcileInterval` | string | `60s` | How often Thunder inventory is polled |
+| `operator.extendedResourcePrefix` | string | `thundercompute.com/gpu-` | Prefix for the extended resource of each GPU model. `""` publishes classes without them, for clusters below 1.36 |
+| `operator.podAnnotations` | object | `{}` | Annotations for operator pods |
+| `operator.podLabels` | object | `{}` | Labels for operator pods |
+| `operator.nodeSelector` | object | `{}` | Node selector for operator pods |
+| `operator.tolerations` | list | `[]` | Tolerations for operator pods |
+| `operator.affinity` | object | `{}` | Affinity for operator pods |
+| `operator.resources` | object | `{}` | Resources for the operator container |
 
-The advertised IP is the address Thunder clients use to reach a node. It
-resolves in this order: `node.advertisedIP`, then the `node.advertisedIPLabel`
-label, then the node's own IP (`status.addresses` `InternalIP`, then
-`ExternalIP`). Most clusters need no configuration here.
-
-### DRA and CDI
+### Node daemon
 
 | Key | Type | Default | Description |
 | --- | --- | --- | --- |
-| `dra.enabled` | bool | `true` | Serve the DRA kubelet plugin |
-| `dra.driverName` | string | `thundercompute.com` | DRA driver name; must match `operator.driverName` |
-| `dra.thunderClientNamespace` | string | `thunder-system` | Namespace for `ThunderClient` resources |
-| `dra.kubeletPluginDir` | string | `/var/lib/kubelet/plugins/thundercompute.com` | Kubelet plugin socket directory |
-| `dra.kubeletRegistrarDir` | string | `/var/lib/kubelet/plugins_registry` | Kubelet plugin registrar directory |
-| `cdi.specDir` | string | `/var/run/cdi` | Where the daemon writes CDI specs |
+| `daemon.image.repository` | string | `thundercompute/thunder-device-plugin-daemon` | Daemon image |
+| `daemon.image.tag` | string | `latest` | Daemon image tag |
+| `daemon.image.pullPolicy` | string | `IfNotPresent` | Daemon image pull policy |
+| `daemon.podAnnotations` | object | `{}` | Annotations for daemon pods |
+| `daemon.podLabels` | object | `{}` | Labels for daemon pods |
+| `daemon.nodeSelector` | object | `{}` | Additional node selector for daemon pods |
+| `daemon.tolerations` | list | `[]` | Tolerations for daemon pods |
+| `daemon.affinity` | object | `{}` | Additional affinity for daemon pods |
+| `daemon.resources` | object | `{}` | Resources for the daemon container |
 
-### NVIDIA and host access
+### Node labels
+
+| Key | Type | Default | Description |
+| --- | --- | --- | --- |
+| `node.thunderLabel` | string | `thundercompute.com/node` | Label marking a node Thunder-eligible |
+| `node.zoneLabel` | string | `topology.kubernetes.io/zone` | Label carrying the Thunder zone |
+| `node.advertisedIPLabel` | string | `thundercompute.com/advertised-ip` | Per-node override for the address clients use |
+
+The advertised IP defaults to the node's own IP (`status.addresses` `InternalIP`,
+then `ExternalIP`). Set the label only when clients reach a node on a different
+address, for example behind NAT.
+
+### NVIDIA, kubelet and runtime
 
 | Key | Type | Default | Description |
 | --- | --- | --- | --- |
 | `nvidia.minDriverVersion` | string | `610` | Minimum driver version the daemon will enroll |
-| `nvidia.libcudaPath` | string | `/usr/lib/x86_64-linux-gnu/libcuda.so.1` | Host `libcuda` bind-mounted into containers |
+| `nvidia.libcudaPath` | string | `/usr/lib/x86_64-linux-gnu/libcuda.so.1` | Host `libcuda`, bind-mounted into containers |
 | `nvidia.libnvidiaMLPath` | string | `/usr/lib/x86_64-linux-gnu/libnvidia-ml.so.1` | Host NVML library |
 | `nvidia.nvidiaSMIPath` | string | `/usr/bin/nvidia-smi` | Host `nvidia-smi` |
-| `hostRoot` | string | `/host` | Where the host filesystem is mounted in the daemon |
-| `hostTargetPID` | string | `"1"` | Host PID whose namespaces the daemon enters; `0` disables `nsenter` |
-
-### Scheduling
-
-| Key | Type | Default | Description |
-| --- | --- | --- | --- |
-| `nodeSelector` | object | see [values.yaml](values.yaml) | Daemon node selector |
-| `nodeLabelKeys.thunderNode` | string | `thundercompute.com/node` | Label marking a node Thunder-eligible |
-| `tolerations` | list | `[]` | Daemon tolerations |
-| `affinity` | object | `{}` | Extra daemon affinity, merged with the required node affinity |
-| `podAnnotations` | object | `{}` | Extra daemon pod annotations |
-| `podLabels` | object | `{}` | Extra daemon pod labels |
-| `resources` | object | `{}` | Daemon resource requests and limits |
+| `kubelet.pluginDirRoot` | string | `/var/lib/kubelet/plugins` | Parent directory for plugin sockets. Change it on distributions that move the kubelet root |
+| `kubelet.registrarDir` | string | `/var/lib/kubelet/plugins_registry` | Directory the kubelet watches for plugin registration |
+| `cdi.specDir` | string | `/var/run/cdi` | Where the daemon writes CDI specs |
 
 ### Tests
 
@@ -208,9 +180,9 @@ write CDI specs the container runtime reads, and to serve the kubelet plugin
 socket. The operator runs unprivileged as a non-root user and only talks to the
 Kubernetes and Thunder APIs.
 
-Both components read the Thunder API token from a Secret. When the chart creates
-that Secret from `thunder.apiToken`, the token is also stored in the Helm
-release history; use `thunder.existingSecret` in production.
+Both components read the Thunder API token from a Secret you create yourself.
+The chart never takes the token as a value, so it is never written to the release
+history.
 
 ## Source
 

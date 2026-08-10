@@ -46,13 +46,11 @@ What it does:
    mid-run.
 5. Runs the **real operator binary** against that stub and the kind cluster,
    then asserts the published `ResourceSlice`: driver, one device per GPU,
-   device naming, zone attribute, shard count, and that exclusive GPUs carry no
-   consumable capacity.
+   device naming, zone attribute and shard count.
 6. Installs the pod test chart, and asserts the scheduler allocates two
    distinct GPU devices to the claim from the right pool.
-7. Asserts the operator generated a `DeviceClass` per GPU type, each pinning
-   its model with a CEL selector, and that the chart's catch-all class carries
-   no extended resource name.
+7. Asserts the operator generated a `DeviceClass` per GPU type, each pinning its
+   model with a CEL selector and exposing its own extended resource.
 8. Adds a second GPU model (H100) to inventory and asserts the operator creates
    its class, extended resource and pool on its own, and that a pod can request
    the new resource immediately.
@@ -97,7 +95,7 @@ cleaning up.
 make preflight
 ```
 
-Checks a cluster you already have: DRA APIs served, consumable capacity
+Checks a cluster you already have: DRA APIs served, extended resource mapping
 preserved by the API server, Thunder node labels, and — with `--with-vm` —
 KubeVirt and its `GPUsWithDRA` gate. It creates nothing and is safe to run
 against production.

@@ -38,4 +38,4 @@ roleRef:
 subjects:
   - kind: ServiceAccount
     name: {{ include "thunder-device-plugin.fullname" . | quote }}
-    namespace: {{ .Values.namespace.name | quote }}
+    namespace: {{ .Release.Namespace | quote }}

@@ -51,11 +51,11 @@ verify_charts() {
   local chart
   for chart in "${CHART_MAIN}" "${CHART_TEST_POD}" "${CHART_TEST_VM}"; do
     check "helm lint $(basename "$(dirname "${chart}")")/$(basename "${chart}")" -- \
-      helm lint "${chart}" --set thunder.apiToken=verify
+      helm lint "${chart}"
   done
 
   local main_manifest pod_manifest vm_manifest
-  if ! main_manifest="$(helm template verify "${CHART_MAIN}" --set thunder.apiToken=verify 2>&1)"; then
+  if ! main_manifest="$(helm template verify "${CHART_MAIN}" 2>&1)"; then
     check_fail "render thunder-device-plugin" "${main_manifest}"
     return
   fi
@@ -80,6 +80,9 @@ verify_charts() {
   check_not_contains "no manifest uses external-ip" "external-ip" "${all}"
   check_contains "driver name is ${DRIVER_NAME}" "${DRIVER_NAME}" "${main_manifest}"
   check_contains "kubelet plugin dir is driver-scoped" "/var/lib/kubelet/plugins/${DRIVER_NAME}" "${main_manifest}"
+  # The token is never a chart value, so it can never reach the release history.
+  check_not_contains "chart never takes the API token as a value" "apiToken" "${main_manifest}"
+  check_not_contains "chart creates no Secret" "kind: Secret" "${main_manifest}"
   # One device per GPU, so a claim asks for a device count rather than a
   # capacity request. This is what lets extended resources request >1 GPU.
   check_contains "pod claim requests GPUs by device count" "count:" "${pod_manifest}"
@@ -95,7 +98,6 @@ verify_charts() {
     "EXTENDED_RESOURCE_PREFIX" "${main_manifest}"
   check_contains "operator may manage DeviceClasses" "deviceclasses" "${main_manifest}"
   # Sharing is expressed by publishing more devices, never consumable capacity.
-  check_not_contains "chart configures no consumable capacity" "sharesPerGPU" "${main_manifest}"
   check_not_contains "test charts pin a GPU type by class" "deviceClassName: \"thunder-gpu\"" \
     "${pod_manifest}${vm_manifest}"
 
@@ -167,14 +169,14 @@ verify_chart_quality() {
   # A schema that does not reject an unknown key is not actually enforcing
   # anything, which is the failure mode worth catching.
   if "${HELM}" template schemacheck "${CHART_MAIN}" \
-    --set thunder.apiToken=verify --set dra.notARealValue=1 >/dev/null 2>&1; then
+    --set operator.notARealValue=1 >/dev/null 2>&1; then
     check_fail "values.schema.json rejects unknown values" \
-      "helm accepted dra.notARealValue"
+      "helm accepted operator.notARealValue"
   else
     check_pass "values.schema.json rejects unknown values"
   fi
 
-  if "${HELM}" template notes "${CHART_MAIN}" --set thunder.apiToken=verify \
+  if "${HELM}" template notes "${CHART_MAIN}" \
     -s templates/NOTES.txt >/dev/null 2>&1 || true; then
     check_pass "NOTES.txt renders"
   fi

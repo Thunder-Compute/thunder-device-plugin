@@ -145,13 +145,13 @@ image-buildx: ## Build and push multi-platform images (see PLATFORMS)
 
 .PHONY: helm-lint
 helm-lint: ## Lint every chart
-	$(HELM) lint $(CHART) --set thunder.apiToken=lint
+	$(HELM) lint $(CHART)
 	$(HELM) lint charts/tests/pod
 	$(HELM) lint charts/tests/vm
 
 .PHONY: helm-template
 helm-template: ## Render the main chart to stdout
-	$(HELM) template $(RELEASE) $(CHART) --namespace $(NAMESPACE) --set thunder.apiToken=template
+	$(HELM) template $(RELEASE) $(CHART) --namespace $(NAMESPACE)
 
 .PHONY: helm-package
 helm-package: ## Package the chart as a .tgz
@@ -169,7 +169,7 @@ helm-package: ## Package the chart as a .tgz
 .PHONY: helm-schema
 helm-schema: ## Check values.yaml validates against values.schema.json
 	@python3 -c "import json,sys; json.load(open('$(CHART)/values.schema.json'))" && echo "values.schema.json is valid JSON"
-	$(HELM) template schema-check $(CHART) --set thunder.apiToken=schema >/dev/null
+	$(HELM) template schema-check $(CHART) >/dev/null
 	@echo "values.yaml validates against the schema"
 
 ##@ Verification
@@ -197,10 +197,12 @@ check-all: check test-local ## Everything, including the local cluster test
 .PHONY: install
 install: ## Install or upgrade the chart (set THUNDER_API_TOKEN)
 	@[[ -n "$${THUNDER_API_TOKEN:-}" ]] || { echo "THUNDER_API_TOKEN is required"; exit 1; }
-	$(HELM) upgrade --install $(RELEASE) $(CHART) \
-		--namespace $(NAMESPACE) --create-namespace \
-		--set-string thunder.apiToken="$$THUNDER_API_TOKEN" \
-		--wait
+	@# The token goes into a Secret directly; the chart never takes it as a value.
+	$(KUBECTL) create namespace $(NAMESPACE) --dry-run=client -o yaml | $(KUBECTL) apply -f -
+	$(KUBECTL) -n $(NAMESPACE) create secret generic thunder-api \
+		--from-literal=THUNDER_API_TOKEN="$$THUNDER_API_TOKEN" \
+		--dry-run=client -o yaml | $(KUBECTL) apply -f -
+	$(HELM) upgrade --install $(RELEASE) $(CHART) --namespace $(NAMESPACE) --wait
 
 .PHONY: uninstall
 uninstall: ## Uninstall the chart

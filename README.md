@@ -84,10 +84,12 @@ kubectl -n thunder-system create secret generic thunder-api \
 kubectl apply -f charts/thunder-device-plugin/crds/
 
 helm upgrade --install thunder-device-plugin charts/thunder-device-plugin \
-  --namespace thunder-system \
-  --set namespace.create=false \
-  --set thunder.existingSecret=thunder-api
+  --namespace thunder-system
 ```
+
+The chart never takes the API token as a value, so it never reaches the Helm
+release history. Create the Secret first; point at a different name with
+`--set thunder.secretName=<name>`.
 
 Verify:
 
@@ -103,8 +105,7 @@ thunder-gpu-a6000   thundercompute.com/gpu-a6000
 thunder-gpu-h100    thundercompute.com/gpu-h100
 ```
 
-One class per GPU model. There is no "any GPU" class or resource — see
-[GPU types](#gpu-types).
+One class per GPU model — see [GPU types](#gpu-types).
 
 Helm never upgrades `crds/`, so re-apply it on every chart upgrade.
 
@@ -293,18 +294,14 @@ pool the same way.
 kubectl get deviceclasses -l app.kubernetes.io/name=thunder-dra-driver --watch
 ```
 
-**Every request names a model:**
+**Every request names a model**, because a Thunder client is enrolled with one
+GPU model:
 
 ```yaml
 resources:
   limits:
     thundercompute.com/gpu-a6000: 2
 ```
-
-There is deliberately no catch-all class. A `DeviceClass` has only per-device
-selectors and no `matchAttribute` constraint, so an unpinned request could be
-satisfied with a mix of models — and one Thunder client is enrolled with exactly
-one model, so a mixed claim is unservable.
 
 Notes: it polls rather than watches, so new hardware appears within
 `operator.reconcileInterval`. A model that leaves inventory entirely has its class
@@ -326,8 +323,8 @@ redeploy. Targets round down, so a target is never exceeded, and a missing or
 malformed target falls back to `1` rather than emptying a zone. If the API call
 fails the operator logs a warning and assumes `1` rather than failing inventory.
 
-Devices stay exclusive either way: one claim gets whole GPUs, and sharing is
-expressed by publishing more of them. Nothing uses DRA consumable capacity.
+A claim always gets whole GPUs; sharing is expressed by how many the zone
+publishes.
 
 ```bash
 kubectl get resourceslices -l app.kubernetes.io/name=thunder-dra-driver \
@@ -343,20 +340,17 @@ kubectl label node <node> thundercompute.com/node=true
 kubectl label node <node> topology.kubernetes.io/zone=<zone>
 ```
 
-Nodes that only *consume* GPUs need nothing. There is no GPU-model label to set:
-the model is detected on the host — see [GPU types](#gpu-types). There is no
-`nvidia.com/gpu.present` requirement either; the daemon verifies the GPU and the
-driver version itself at startup and fails loudly if either is missing, which is
-a better signal than a DaemonSet that silently schedules nothing. Add it to
-`nodeSelector` yourself if you run NVIDIA GPU Feature Discovery.
+Nodes that only *consume* GPUs need nothing. The GPU model is detected on the
+host, not read from a label — see [GPU types](#gpu-types) — and the daemon
+verifies the GPU and driver version itself at startup, failing with a clear
+error if either is missing.
 
 **Advertised IP** — the address Thunder clients use to reach the node. It
 **defaults to the node's own IP**, so most clusters configure nothing. Resolution
 order:
 
-1. `--set node.advertisedIP=<ip>` (applies to every node in the release)
-2. node label `thundercompute.com/advertised-ip`
-3. `status.addresses`: `InternalIP`, then `ExternalIP`
+1. node label `thundercompute.com/advertised-ip`
+2. `status.addresses`: `InternalIP`, then `ExternalIP`
 
 Override per node only when clients reach it on a different address, e.g. behind
 NAT:
@@ -452,12 +446,12 @@ misspelled `--set` key fails the install.
 
 | Value | Default | Purpose |
 | --- | --- | --- |
-| `operator.extendedResourcePrefix` | `thundercompute.com/gpu-` | Prefix for generated per-type resources; `""` disables |
-| `operator.deviceClassPrefix` | `thunder-gpu-` | Name prefix for the generated classes |
+| `thunder.secretName` | `thunder-api` | Existing Secret holding `THUNDER_API_TOKEN` |
+| `thunder.apiURL` | `https://registry.thundercompute.com` | Thunder API endpoint |
+| `operator.extendedResourcePrefix` | `thundercompute.com/gpu-` | Prefix for per-model extended resources; `""` for clusters below 1.36 |
 | `operator.reconcileInterval` | `60s` | How quickly inventory and targets are picked up |
-| `node.advertisedIP` | `""` | Pins the advertised IP for every node |
 | `nvidia.minDriverVersion` | `610` | Daemon refuses older drivers |
-| `thunder.existingSecret` | `""` | Reuse a pre-created token Secret |
+| `kubelet.pluginDirRoot` | `/var/lib/kubelet/plugins` | Change on distributions that move the kubelet root |
 
 ## Development
 
@@ -491,7 +485,7 @@ Details in [`hack/README.md`](hack/README.md).
 | `thundercompute.com/gpu-x` unknown | No node of that model is enrolled | `kubectl get deviceclasses -l app.kubernetes.io/name=thunder-dra-driver` |
 | Extended resource ignored | `DRAExtendedResource` off (1.34–1.35) | `make preflight` |
 | Pod stuck `ContainerCreating` | Daemon failing to prepare | `kubectl -n thunder-system logs -l app.kubernetes.io/component=daemon` |
-| `thundercompute.com/gpu` unknown | There is no "any GPU" resource | Name a model: `thundercompute.com/gpu-a6000` |
+| Unknown resource name | Model not enrolled, or name misspelled | `kubectl get deviceclasses -l app.kubernetes.io/name=thunder-dra-driver` |
 | Pool bigger than the GPU count | Zone oversubscription target above 1 | See [Oversubscription](#oversubscription) |
 | Daemon will not start | No zone label, or no node IP | `kubectl get node <node> -o wide` |
 | VM boots without a GPU | Guest artifacts not mounted | `kubectl get cm,secret \| grep <claim-name>-thunder` |

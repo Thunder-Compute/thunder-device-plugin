@@ -3,12 +3,12 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: {{ printf "%s-operator" (include "thunder-device-plugin.fullname" .) | trunc 63 | trimSuffix "-" | quote }}
-  namespace: {{ .Values.namespace.name | quote }}
+  namespace: {{ .Release.Namespace | quote }}
   labels:
     {{- include "thunder-device-plugin.labels" . | nindent 4 }}
     app.kubernetes.io/component: operator
 spec:
-  replicas: {{ .Values.operator.replicas }}
+  replicas: 1
   selector:
     matchLabels:
       {{- include "thunder-device-plugin.operatorSelectorLabels" . | nindent 6 }}
@@ -35,28 +35,20 @@ spec:
           imagePullPolicy: {{ .Values.operator.image.pullPolicy }}
           env:
             - name: DRA_DRIVER_NAME
-              value: {{ .Values.operator.driverName | quote }}
-            - name: RESOURCE_SLICE_NAME_PREFIX
-              value: {{ .Values.operator.resourceSliceNamePrefix | quote }}
+              value: {{ .Values.driverName | quote }}
             - name: NODE_ZONE_LABEL
               value: {{ .Values.node.zoneLabel | quote }}
             - name: RECONCILE_INTERVAL
               value: {{ .Values.operator.reconcileInterval | quote }}
-            - name: DEVICE_CLASS_PREFIX
-              value: {{ .Values.operator.deviceClassPrefix | quote }}
             - name: EXTENDED_RESOURCE_PREFIX
               value: {{ .Values.operator.extendedResourcePrefix | quote }}
+            - name: THUNDER_API_URL
+              value: {{ .Values.thunder.apiURL | quote }}
             - name: THUNDER_API_TOKEN
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "thunder-device-plugin.secretName" . | quote }}
-                  key: {{ .Values.thunder.apiTokenKey | quote }}
-            - name: THUNDER_API_URL
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "thunder-device-plugin.secretName" . | quote }}
-                  key: {{ .Values.thunder.apiURLKey | quote }}
-                  optional: true
+                  name: {{ .Values.thunder.secretName | quote }}
+                  key: THUNDER_API_TOKEN
           {{- with .Values.operator.resources }}
           resources:
             {{- toYaml . | nindent 12 }}

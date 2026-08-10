@@ -1,35 +1,36 @@
-{{ .Chart.Name }} {{ .Chart.Version }} (app {{ .Chart.AppVersion }}) installed into namespace {{ .Values.namespace.name }}.
+{{ .Chart.Name }} {{ .Chart.Version }} (app {{ .Chart.AppVersion }}) installed into namespace {{ .Release.Namespace }}.
 
-Components:
-  operator  {{ if .Values.operator.enabled }}enabled  - publishes ResourceSlice inventory{{ else }}DISABLED - no inventory will be published{{ end }}
-  daemon    DaemonSet on nodes labelled {{ .Values.nodeLabelKeys.thunderNode }}=true
-  driver    {{ .Values.dra.driverName }}
-  classes   {{ if .Values.operator.extendedResourcePrefix }}one per GPU type, generated from Thunder inventory{{ else }}DISABLED - create DeviceClasses yourself{{ end }}
+  operator  {{ if .Values.operator.enabled }}enabled{{ else }}DISABLED - no GPUs will be advertised{{ end }}
+  daemon    on nodes labelled {{ .Values.node.thunderLabel }}=true
+  driver    {{ .Values.driverName }}
 
 1. Wait for both components to become ready:
 
-     kubectl -n {{ .Values.namespace.name }} rollout status daemonset/{{ include "thunder-device-plugin.fullname" . }}
+     kubectl -n {{ .Release.Namespace }} rollout status daemonset/{{ include "thunder-device-plugin.fullname" . }}
 {{- if .Values.operator.enabled }}
-     kubectl -n {{ .Values.namespace.name }} rollout status deployment/{{ include "thunder-device-plugin.fullname" . }}-operator
+     kubectl -n {{ .Release.Namespace }} rollout status deployment/{{ include "thunder-device-plugin.fullname" . }}-operator
 {{- end }}
 
-2. Confirm the operator published GPU inventory:
+2. See which GPU models the cluster can serve. One class per model appears as
+   Thunder inventory is read:
 
      kubectl get deviceclasses -l app.kubernetes.io/name=thunder-dra-driver \
        -o custom-columns=CLASS:.metadata.name,RESOURCE:.spec.extendedResourceName
+{{- if .Values.tests.enabled }}
 
    Or run the packaged smoke test:
 
-     helm test {{ .Release.Name }} --namespace {{ .Values.namespace.name }}
+     helm test {{ .Release.Name }} --namespace {{ .Release.Namespace }}
+{{- end }}
 
-3. Request GPUs. Every request names a GPU model; there is no "any GPU" form.
+3. Request GPUs. Every request names a GPU model.
 {{- if .Values.operator.extendedResourcePrefix }}
 
    As an extended resource (needs Kubernetes 1.36+):
 
      resources:
        limits:
-         {{ .Values.operator.extendedResourcePrefix }}<gpu-type>: 2
+         {{ .Values.operator.extendedResourcePrefix }}<gpu-model>: 2
 {{- end }}
 
    Or as a ResourceClaim, which works on any supported cluster:
@@ -44,20 +45,8 @@ Components:
            requests:
              - name: gpu
                exactly:
-                 deviceClassName: {{ .Values.operator.deviceClassPrefix }}<gpu-type>
+                 deviceClassName: thunder-gpu-<gpu-model>
                  allocationMode: ExactCount
                  count: 2          # one device per GPU
-
-{{- if not .Values.thunder.existingSecret }}
-
-NOTE: the Thunder API token was stored in Secret {{ .Values.thunder.secretName }} from
-      a Helm value, so it is also recorded in the release history. For production,
-      pre-create the Secret and install with --set thunder.existingSecret={{ .Values.thunder.secretName }}.
-{{- end }}
-{{- if and .Values.node.advertisedIP (not (eq .Values.node.advertisedIP "")) }}
-
-NOTE: node.advertisedIP is pinned to {{ .Values.node.advertisedIP }} for EVERY node in this
-      release. Unset it to let each node advertise its own IP.
-{{- end }}
 
 Docs: https://github.com/Thunder-Compute/thunder-device-plugin#readme

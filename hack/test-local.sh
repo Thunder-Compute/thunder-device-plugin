@@ -165,11 +165,16 @@ install_chart() {
   kube apply -f "${CHART_MAIN}/crds/" >/dev/null
   check_pass "applied CRDs"
 
+  # The chart requires the token Secret to exist first.
+  kube create namespace "${NAMESPACE}" --dry-run=client -o yaml | kube apply -f - >/dev/null
+  kube -n "${NAMESPACE}" create secret generic thunder-api \
+    --from-literal=THUNDER_API_TOKEN=local-test \
+    --dry-run=client -o yaml | kube apply -f - >/dev/null
+
   # The operator runs out of cluster below, so only the chart's cluster-scoped
-  # objects matter here; a stub token keeps the Secret template happy.
+  # objects matter here.
   if helm_cmd upgrade --install "${RELEASE}" "${CHART_MAIN}" \
-    --namespace "${NAMESPACE}" --create-namespace \
-    --set thunder.apiToken=local-test \
+    --namespace "${NAMESPACE}" \
     --set tests.enabled=false \
     --timeout 120s >"${WORK_DIR}/helm.log" 2>&1; then
     check_pass "installed ${RELEASE}"

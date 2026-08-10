@@ -1,121 +1,120 @@
-# Override the chart name used for resource names, or the generated names
-# themselves. Leave empty for the defaults.
+# Default values for thunder-device-plugin.
+# This is a YAML-formatted file.
+# Declare variables to be passed into your templates.
+
+# -- Override the chart name used to build resource names.
 nameOverride: ""
+# -- Override the fully generated name used for resources.
 fullnameOverride: ""
-
-# Pull secrets applied to both the daemon and the operator.
+# -- Image pull secrets applied to both components. (Example: `[{name: my-registry}]`)
 imagePullSecrets: []
+# -- DRA driver name. It identifies this driver to the scheduler and kubelet, and names the CDI devices it produces, so change it only to run two independent installs side by side.
+driverName: thundercompute.com
 
-namespace:
-  create: true
-  name: thunder-system
-
-image:
-  repository: thundercompute/thunder-device-plugin-daemon
-  tag: latest
-  pullPolicy: IfNotPresent
-
-operator:
-  enabled: true
-  replicas: 1
-  image:
-    repository: thundercompute/thunder-dra-operator
-    tag: latest
-    pullPolicy: IfNotPresent
-  driverName: thundercompute.com
-  resourceSliceNamePrefix: thunder
-  reconcileInterval: 60s
-  # How many clients may share one physical GPU. 1 keeps every GPU exclusive
-  # and publishes no consumable capacity at all, which means the driver needs
-  # only the GA DRA APIs. Raising it oversubscribes each GPU and requires the
-  # The operator generates one DeviceClass per GPU type it finds in inventory,
-  # so every request names the model it wants:
-  #
-  #   resources:
-  #     limits:
-  #       thundercompute.com/gpu-a6000: 2
-  #
-  # There is deliberately no catch-all class or "any GPU" resource: a
-  # DeviceClass has selectors but no cross-device constraint, so an unpinned
-  # request could be satisfied with a mix of models, and one Thunder client is
-  # enrolled with exactly one model.
-  deviceClassPrefix: thunder-gpu-
-  extendedResourcePrefix: thundercompute.com/gpu-
-  podAnnotations: {}
-  podLabels: {}
-  nodeSelector: {}
-  tolerations: []
-  affinity: {}
-  resources: {}
+## thunder api
 
 thunder:
-  # Prefer passing this with --set-file or an external secrets flow.
-  apiToken: ""
-  apiURL: "https://api.thundercompute.com:2096"
-  # Set this to reuse a pre-created Secret in thunder-system.
-  existingSecret: ""
+  # -- Name of an existing Secret holding the Thunder API token under the key `THUNDER_API_TOKEN`. Create it before installing; the chart never writes the token itself.
   secretName: thunder-api
-  apiTokenKey: THUNDER_API_TOKEN
-  apiURLKey: THUNDER_API_URL
+  # -- Thunder API endpoint.
+  apiURL: "https://registry.thundercompute.com"
 
-node:
-  # The Kubernetes node name is injected from spec.nodeName.
-  #
-  # zone and advertisedIP are per-node overrides that apply to every node in the
-  # DaemonSet, so leave them empty unless the whole cluster shares one value.
-  # When empty the daemon resolves them per node:
-  #   zone         -> the zoneLabel label (required)
-  #   advertisedIP -> the advertisedIPLabel label, else the node's own IP
-  #                   (status.addresses InternalIP, then ExternalIP)
-  zone: ""
-  advertisedIP: ""
-  zoneLabel: topology.kubernetes.io/zone
-  advertisedIPLabel: thundercompute.com/advertised-ip
+## operator
 
-nvidia:
-  minDriverVersion: "610"
-  libcudaPath: /usr/lib/x86_64-linux-gnu/libcuda.so.1
-  libnvidiaMLPath: /usr/lib/x86_64-linux-gnu/libnvidia-ml.so.1
-  nvidiaSMIPath: /usr/bin/nvidia-smi
-
-hostRoot: /host
-hostTargetPID: "1"
-
-dra:
-  enabled: true
-  driverName: thundercompute.com
-  thunderClientNamespace: thunder-system
-  kubeletPluginDir: /var/lib/kubelet/plugins/thundercompute.com
-  kubeletRegistrarDir: /var/lib/kubelet/plugins_registry
-
-cdi:
-  specDir: /var/run/cdi
-
-# Extra scheduling constraints for the daemon. The Thunder node label and the
-# zone label are already required through node affinity, and the daemon verifies
-# the GPU itself at startup, so nothing needs to be listed here by default. Add
-# entries if you want to narrow it further, e.g. nvidia.com/gpu.present: "true"
-# when you run NVIDIA GPU Feature Discovery.
-nodeSelector: {}
-
-nodeLabelKeys:
-  # Label that marks a node as Thunder-eligible. The DaemonSet requires it in
-  # addition to nodeSelector above.
-  thunderNode: thundercompute.com/node
-
-tolerations: []
-affinity: {}
-
-podAnnotations: {}
-podLabels: {}
-
-resources: {}
-
-tests:
-  # Resources created by `helm test`. The image only needs kubectl on PATH.
+operator:
+  # -- Setting that deploys the operator, which turns Thunder inventory into Kubernetes GPU inventory. Without it no GPUs are advertised.
   enabled: true
   image:
-    repository: registry.k8s.io/kubectl
-    tag: v1.34.0
+    # -- Repository for the operator image.
+    repository: thundercompute/thunder-dra-operator
+    # -- Tag for the operator image.
+    tag: latest
+    # -- Pull policy for the operator image. (Options: "Always", "IfNotPresent", "Never")
     pullPolicy: IfNotPresent
+  # -- How often Thunder inventory is polled. New GPU models and capacity changes appear within this interval.
+  reconcileInterval: 60s
+  # -- Prefix for the extended resource of each GPU model, so a workload can ask for `thundercompute.com/gpu-a6000: 2`. Set to "" on clusters below 1.36, where workloads use ResourceClaims instead.
+  extendedResourcePrefix: thundercompute.com/gpu-
+  # -- Annotations added to operator pods.
+  podAnnotations: {}
+  # -- Labels added to operator pods.
+  podLabels: {}
+  # -- Node selector for operator pods.
+  nodeSelector: {}
+  # -- Tolerations for operator pods.
+  tolerations: []
+  # -- Affinity for operator pods.
+  affinity: {}
+  # -- Resource requests and limits for the operator container.
+  resources: {}
+
+## node daemon
+
+daemon:
+  image:
+    # -- Repository for the node daemon image.
+    repository: thundercompute/thunder-device-plugin-daemon
+    # -- Tag for the node daemon image.
+    tag: latest
+    # -- Pull policy for the node daemon image. (Options: "Always", "IfNotPresent", "Never")
+    pullPolicy: IfNotPresent
+  # -- Annotations added to daemon pods.
+  podAnnotations: {}
+  # -- Labels added to daemon pods.
+  podLabels: {}
+  # -- Additional node selector for daemon pods, applied on top of the Thunder node and zone labels.
+  nodeSelector: {}
+  # -- Tolerations for daemon pods.
+  tolerations: []
+  # -- Additional affinity for daemon pods, merged with the required Thunder node affinity.
+  affinity: {}
+  # -- Resource requests and limits for the daemon container.
+  resources: {}
+
+## node labels
+
+node:
+  # -- Node label that marks a node as Thunder-eligible. The daemon only schedules onto nodes where this is "true".
+  thunderLabel: thundercompute.com/node
+  # -- Node label carrying the Thunder zone. Required on every Thunder node.
+  zoneLabel: topology.kubernetes.io/zone
+  # -- Node label that overrides the address Thunder clients use to reach a node. Optional; the node's own IP is used when it is absent.
+  advertisedIPLabel: thundercompute.com/advertised-ip
+
+## nvidia
+
+nvidia:
+  # -- Minimum NVIDIA driver version the daemon will enroll. A node running an older driver fails at startup rather than serving GPUs.
+  minDriverVersion: "610"
+  # -- Host path to libcuda, bind-mounted into containers that claim a GPU.
+  libcudaPath: /usr/lib/x86_64-linux-gnu/libcuda.so.1
+  # -- Host path to the NVIDIA Management Library, bind-mounted into containers that claim a GPU.
+  libnvidiaMLPath: /usr/lib/x86_64-linux-gnu/libnvidia-ml.so.1
+  # -- Host path to nvidia-smi, bind-mounted into containers that claim a GPU.
+  nvidiaSMIPath: /usr/bin/nvidia-smi
+
+## kubelet and container runtime
+
+kubelet:
+  # -- Parent directory for kubelet plugin sockets. The driver gets its own subdirectory. Distributions that move the kubelet root need this changed. (Example: "/var/lib/rancher/k3s/agent/kubelet/plugins")
+  pluginDirRoot: /var/lib/kubelet/plugins
+  # -- Directory the kubelet watches for plugin registration.
+  registrarDir: /var/lib/kubelet/plugins_registry
+cdi:
+  # -- Directory the daemon writes CDI specs to. Must be a directory the container runtime reads.
+  specDir: /var/run/cdi
+
+## tests
+
+tests:
+  # -- Setting that renders the `helm test` hook, which waits for the operator to publish GPU inventory.
+  enabled: true
+  image:
+    # -- Repository for the test image. It only needs kubectl on PATH.
+    repository: registry.k8s.io/kubectl
+    # -- Tag for the test image.
+    tag: v1.34.0
+    # -- Pull policy for the test image. (Options: "Always", "IfNotPresent", "Never")
+    pullPolicy: IfNotPresent
+  # -- How long `helm test` waits for inventory to appear. Raise it if reconcileInterval is raised.
   timeoutSeconds: 120

@@ -2,7 +2,7 @@ apiVersion: apps/v1
 kind: DaemonSet
 metadata:
   name: {{ include "thunder-device-plugin.fullname" . | quote }}
-  namespace: {{ .Values.namespace.name | quote }}
+  namespace: {{ .Release.Namespace | quote }}
   labels:
     {{- include "thunder-device-plugin.labels" . | nindent 4 }}
     app.kubernetes.io/component: daemon
@@ -14,10 +14,10 @@ spec:
     metadata:
       labels:
         {{- include "thunder-device-plugin.selectorLabels" . | nindent 8 }}
-        {{- with .Values.podLabels }}
+        {{- with .Values.daemon.podLabels }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
-      {{- with .Values.podAnnotations }}
+      {{- with .Values.daemon.podAnnotations }}
       annotations:
         {{- toYaml . | nindent 8 }}
       {{- end }}
@@ -30,8 +30,8 @@ spec:
       hostPID: true
       containers:
         - name: daemon
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
-          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          image: "{{ .Values.daemon.image.repository }}:{{ .Values.daemon.image.tag }}"
+          imagePullPolicy: {{ .Values.daemon.image.pullPolicy }}
           securityContext:
             privileged: true
             runAsUser: 0
@@ -40,34 +40,22 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: spec.nodeName
-            {{- with .Values.node.zone }}
-            - name: ZONE
-              value: {{ . | quote }}
-            {{- end }}
-            {{- with .Values.node.advertisedIP }}
-            - name: ADVERTISED_IP
-              value: {{ . | quote }}
-            {{- end }}
             - name: NODE_ZONE_LABEL
               value: {{ .Values.node.zoneLabel | quote }}
             - name: NODE_ADVERTISED_IP_LABEL
               value: {{ .Values.node.advertisedIPLabel | quote }}
+            - name: THUNDER_API_URL
+              value: {{ .Values.thunder.apiURL | quote }}
             - name: MIN_DRIVER_VERSION
               value: {{ .Values.nvidia.minDriverVersion | quote }}
-            - name: HOST_ROOT
-              value: {{ .Values.hostRoot | quote }}
-            - name: HOST_TARGET_PID
-              value: {{ .Values.hostTargetPID | quote }}
-            - name: DRA_ENABLED
-              value: {{ .Values.dra.enabled | quote }}
             - name: DRA_DRIVER_NAME
-              value: {{ .Values.dra.driverName | quote }}
+              value: {{ .Values.driverName | quote }}
             - name: THUNDER_CLIENT_NAMESPACE
-              value: {{ .Values.dra.thunderClientNamespace | quote }}
+              value: {{ .Release.Namespace | quote }}
             - name: KUBELET_PLUGIN_DIR
-              value: {{ .Values.dra.kubeletPluginDir | quote }}
+              value: {{ include "thunder-device-plugin.kubeletPluginDir" . | quote }}
             - name: KUBELET_REGISTRAR_DIR
-              value: {{ .Values.dra.kubeletRegistrarDir | quote }}
+              value: {{ .Values.kubelet.registrarDir | quote }}
             - name: CDI_SPEC_DIR
               value: {{ .Values.cdi.specDir | quote }}
             - name: LIBCUDA_PATH
@@ -79,27 +67,21 @@ spec:
             - name: THUNDER_API_TOKEN
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "thunder-device-plugin.secretName" . | quote }}
-                  key: {{ .Values.thunder.apiTokenKey | quote }}
-            - name: THUNDER_API_URL
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "thunder-device-plugin.secretName" . | quote }}
-                  key: {{ .Values.thunder.apiURLKey | quote }}
-                  optional: true
+                  name: {{ .Values.thunder.secretName | quote }}
+                  key: THUNDER_API_TOKEN
           volumeMounts:
             - name: host-root
-              mountPath: {{ .Values.hostRoot | quote }}
+              mountPath: "/host"
               readOnly: true
               mountPropagation: HostToContainer
             - name: kubelet-plugin-dir
-              mountPath: {{ .Values.dra.kubeletPluginDir | quote }}
+              mountPath: {{ include "thunder-device-plugin.kubeletPluginDir" . | quote }}
               mountPropagation: Bidirectional
             - name: kubelet-registrar-dir
-              mountPath: {{ .Values.dra.kubeletRegistrarDir | quote }}
+              mountPath: {{ .Values.kubelet.registrarDir | quote }}
             - name: cdi-spec-dir
               mountPath: {{ .Values.cdi.specDir | quote }}
-          {{- with .Values.resources }}
+          {{- with .Values.daemon.resources }}
           resources:
             {{- toYaml . | nindent 12 }}
           {{- end }}
@@ -110,11 +92,11 @@ spec:
             type: Directory
         - name: kubelet-plugin-dir
           hostPath:
-            path: {{ .Values.dra.kubeletPluginDir | quote }}
+            path: {{ include "thunder-device-plugin.kubeletPluginDir" . | quote }}
             type: DirectoryOrCreate
         - name: kubelet-registrar-dir
           hostPath:
-            path: {{ .Values.dra.kubeletRegistrarDir | quote }}
+            path: {{ .Values.kubelet.registrarDir | quote }}
             type: Directory
         - name: cdi-spec-dir
           hostPath:
@@ -127,11 +109,11 @@ spec:
               - matchExpressions:
                   - key: {{ .Values.node.zoneLabel | quote }}
                     operator: Exists
-                  - key: {{ .Values.nodeLabelKeys.thunderNode | quote }}
+                  - key: {{ .Values.node.thunderLabel | quote }}
                     operator: In
                     values:
                       - "true"
-        {{- with .Values.affinity }}
+        {{- with .Values.daemon.affinity }}
         {{- with .nodeAffinity }}
         {{- with .preferredDuringSchedulingIgnoredDuringExecution }}
           preferredDuringSchedulingIgnoredDuringExecution:
@@ -147,11 +129,11 @@ spec:
           {{- toYaml . | nindent 10 }}
         {{- end }}
         {{- end }}
-      {{- with .Values.nodeSelector }}
+      {{- with .Values.daemon.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- with .Values.tolerations }}
+      {{- with .Values.daemon.tolerations }}
       tolerations:
         {{- toYaml . | nindent 8 }}
       {{- end }}
