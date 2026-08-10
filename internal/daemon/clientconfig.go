@@ -5,11 +5,26 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
 )
+
+// retryableError marks a failure that another attempt might get past: a
+// transport error, a rate limit, or a server-side fault. A rejection such as
+// "enrollment token already used" is not one of these — retrying it only
+// delays the real error.
+type retryableError struct{ err error }
+
+func (e retryableError) Error() string { return e.err.Error() }
+func (e retryableError) Unwrap() error { return e.err }
+
+func isRetryable(err error) bool {
+	var retryable retryableError
+	return errors.As(err, &retryable)
+}
 
 // ThunderClientConfig is /etc/thunder/config.json, the file libthunder.so reads
 // to learn which client it is and which control plane to talk to. The field set
@@ -77,7 +92,9 @@ func ExchangeClientEnrollment(ctx context.Context, httpClient *http.Client, cent
 
 	response, err := httpClient.Do(request)
 	if err != nil {
-		return ThunderClientConfig{}, fmt.Errorf("exchange client enrollment: %w", err)
+		// The request may never have reached Thunder, so the token may well be
+		// unspent. Worth another attempt.
+		return ThunderClientConfig{}, retryableError{fmt.Errorf("exchange client enrollment: %w", err)}
 	}
 	defer response.Body.Close()
 
@@ -86,8 +103,14 @@ func ExchangeClientEnrollment(ctx context.Context, httpClient *http.Client, cent
 		return ThunderClientConfig{}, fmt.Errorf("read enrollment response: %w", err)
 	}
 	if response.StatusCode < 200 || response.StatusCode > 299 {
-		return ThunderClientConfig{}, fmt.Errorf("exchange client enrollment: status %s: %s",
+		err := fmt.Errorf("exchange client enrollment: status %s: %s",
 			response.Status, strings.TrimSpace(string(payload)))
+		// A rate limit or a server fault is worth retrying. Any other 4xx is a
+		// verdict on this request and will not change.
+		if response.StatusCode == http.StatusTooManyRequests || response.StatusCode >= 500 {
+			return ThunderClientConfig{}, retryableError{err}
+		}
+		return ThunderClientConfig{}, err
 	}
 
 	var enrolled clientEnrollmentResponse

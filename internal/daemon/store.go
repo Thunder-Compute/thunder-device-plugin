@@ -595,11 +595,18 @@ func (s *FileCDIDeviceStore) Remove(ctx context.Context, qualifiedName string) e
 	if strings.TrimSpace(qualifiedName) == "" {
 		return nil
 	}
+	// Wait for any hook still staging this claim. Deleting the state dir
+	// underneath one would fail that container with a confusing missing-token
+	// error instead of letting it finish and be torn down cleanly.
+	deviceName := cdiDeviceNameFromQualifiedName(qualifiedName)
+	if unlock, err := lockStateDir(s.stateDir(deviceName)); err == nil {
+		defer unlock()
+	}
 	specErr := os.Remove(s.specPath(qualifiedName))
 	if specErr != nil && !os.IsNotExist(specErr) {
 		return specErr
 	}
-	if err := os.RemoveAll(s.stateDir(cdiDeviceNameFromQualifiedName(qualifiedName))); err != nil && !os.IsNotExist(err) {
+	if err := os.RemoveAll(s.stateDir(deviceName)); err != nil && !os.IsNotExist(err) {
 		return err
 	}
 	return nil
