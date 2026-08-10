@@ -4,7 +4,17 @@
   "description": "Values for the Thunder Compute DRA device plugin chart.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["driverName", "thunder", "operator", "daemon", "node", "nvidia", "kubelet", "cdi", "tests"],
+  "required": [
+    "driverName",
+    "thunder",
+    "operator",
+    "daemon",
+    "node",
+    "nvidia",
+    "kubelet",
+    "cdi",
+    "tests"
+  ],
   "definitions": {
     "labelKey": {
       "type": "string",
@@ -21,36 +31,85 @@
     "image": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["repository", "tag", "pullPolicy"],
+      "required": [
+        "repository",
+        "tag",
+        "pullPolicy"
+      ],
       "properties": {
-        "repository": { "type": "string", "minLength": 1 },
-        "tag": { "type": "string", "minLength": 1 },
-        "pullPolicy": { "enum": ["Always", "IfNotPresent", "Never"] }
+        "repository": {
+          "type": "string",
+          "minLength": 1
+        },
+        "tag": {
+          "type": "string",
+          "minLength": 1
+        },
+        "pullPolicy": {
+          "enum": [
+            "Always",
+            "IfNotPresent",
+            "Never"
+          ]
+        }
       }
     },
-    "stringMap": { "type": "object", "additionalProperties": { "type": "string" } },
-    "tolerations": { "type": "array", "items": { "type": "object" } },
+    "stringMap": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "tolerations": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
     "workload": {
       "type": "object",
       "properties": {
-        "podAnnotations": { "$ref": "#/definitions/stringMap" },
-        "podLabels": { "$ref": "#/definitions/stringMap" },
-        "nodeSelector": { "$ref": "#/definitions/stringMap" },
-        "tolerations": { "$ref": "#/definitions/tolerations" },
-        "affinity": { "type": "object" },
-        "resources": { "type": "object" }
+        "podAnnotations": {
+          "$ref": "#/definitions/stringMap"
+        },
+        "podLabels": {
+          "$ref": "#/definitions/stringMap"
+        },
+        "nodeSelector": {
+          "$ref": "#/definitions/stringMap"
+        },
+        "tolerations": {
+          "$ref": "#/definitions/tolerations"
+        },
+        "affinity": {
+          "type": "object"
+        },
+        "resources": {
+          "type": "object"
+        }
       }
     }
   },
   "properties": {
-    "nameOverride": { "type": "string" },
-    "fullnameOverride": { "type": "string" },
+    "nameOverride": {
+      "type": "string"
+    },
+    "fullnameOverride": {
+      "type": "string"
+    },
     "imagePullSecrets": {
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["name"],
-        "properties": { "name": { "type": "string", "minLength": 1 } }
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
       }
     },
     "driverName": {
@@ -62,24 +121,44 @@
     "thunder": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["secretName", "apiURL"],
+      "required": [
+        "secretName",
+        "apiURL"
+      ],
       "properties": {
         "secretName": {
           "type": "string",
           "minLength": 1,
           "description": "Existing Secret holding THUNDER_API_TOKEN. Must exist before install."
         },
-        "apiURL": { "type": "string", "pattern": "^https?://" }
+        "apiURL": {
+          "type": "string",
+          "pattern": "^https?://"
+        }
       }
     },
     "operator": {
-      "allOf": [{ "$ref": "#/definitions/workload" }],
+      "allOf": [
+        {
+          "$ref": "#/definitions/workload"
+        }
+      ],
       "type": "object",
       "additionalProperties": false,
-      "required": ["enabled", "image", "reconcileInterval", "extendedResourcePrefix"],
+      "required": [
+        "enabled",
+        "image",
+        "reconcileInterval",
+        "extendedResourcePrefix",
+        "orphanGracePeriod"
+      ],
       "properties": {
-        "enabled": { "type": "boolean" },
-        "image": { "$ref": "#/definitions/image" },
+        "enabled": {
+          "type": "boolean"
+        },
+        "image": {
+          "$ref": "#/definitions/image"
+        },
         "reconcileInterval": {
           "type": "string",
           "pattern": "^[0-9]+(ns|us|ms|s|m|h)$",
@@ -90,73 +169,158 @@
           "pattern": "^$|^[a-z0-9]([-a-z0-9.]*[a-z0-9])?/[A-Za-z0-9][-A-Za-z0-9_.]*$",
           "description": "Domain-qualified prefix for per-GPU-model extended resources. Empty publishes classes without them."
         },
-        "podAnnotations": { "$ref": "#/definitions/stringMap" },
-        "podLabels": { "$ref": "#/definitions/stringMap" },
-        "nodeSelector": { "$ref": "#/definitions/stringMap" },
-        "tolerations": { "$ref": "#/definitions/tolerations" },
-        "affinity": { "type": "object" },
-        "resources": { "type": "object" }
+        "podAnnotations": {
+          "$ref": "#/definitions/stringMap"
+        },
+        "podLabels": {
+          "$ref": "#/definitions/stringMap"
+        },
+        "nodeSelector": {
+          "$ref": "#/definitions/stringMap"
+        },
+        "tolerations": {
+          "$ref": "#/definitions/tolerations"
+        },
+        "affinity": {
+          "type": "object"
+        },
+        "resources": {
+          "type": "object"
+        },
+        "orphanGracePeriod": {
+          "type": "string",
+          "pattern": "^[0-9]+(ns|us|ms|s|m|h)$",
+          "description": "Go duration a client resource may outlive its ResourceClaim before being revoked and removed."
+        }
       }
     },
     "daemon": {
-      "allOf": [{ "$ref": "#/definitions/workload" }],
+      "allOf": [
+        {
+          "$ref": "#/definitions/workload"
+        }
+      ],
       "type": "object",
       "additionalProperties": false,
-      "required": ["image"],
+      "required": [
+        "image"
+      ],
       "properties": {
-        "image": { "$ref": "#/definitions/image" },
-        "podAnnotations": { "$ref": "#/definitions/stringMap" },
-        "podLabels": { "$ref": "#/definitions/stringMap" },
-        "nodeSelector": { "$ref": "#/definitions/stringMap" },
-        "tolerations": { "$ref": "#/definitions/tolerations" },
-        "affinity": { "type": "object" },
-        "resources": { "type": "object" }
+        "image": {
+          "$ref": "#/definitions/image"
+        },
+        "podAnnotations": {
+          "$ref": "#/definitions/stringMap"
+        },
+        "podLabels": {
+          "$ref": "#/definitions/stringMap"
+        },
+        "nodeSelector": {
+          "$ref": "#/definitions/stringMap"
+        },
+        "tolerations": {
+          "$ref": "#/definitions/tolerations"
+        },
+        "affinity": {
+          "type": "object"
+        },
+        "resources": {
+          "type": "object"
+        }
       }
     },
     "node": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["thunderLabel", "zoneLabel", "advertisedIPLabel"],
+      "required": [
+        "thunderLabel",
+        "zoneLabel",
+        "advertisedIPLabel"
+      ],
       "properties": {
-        "thunderLabel": { "$ref": "#/definitions/labelKey" },
-        "zoneLabel": { "$ref": "#/definitions/labelKey" },
-        "advertisedIPLabel": { "$ref": "#/definitions/labelKey" }
+        "thunderLabel": {
+          "$ref": "#/definitions/labelKey"
+        },
+        "zoneLabel": {
+          "$ref": "#/definitions/labelKey"
+        },
+        "advertisedIPLabel": {
+          "$ref": "#/definitions/labelKey"
+        }
       }
     },
     "nvidia": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["minDriverVersion", "libcudaPath", "libnvidiaMLPath", "nvidiaSMIPath"],
+      "required": [
+        "minDriverVersion",
+        "libcudaPath",
+        "libnvidiaMLPath",
+        "nvidiaSMIPath"
+      ],
       "properties": {
-        "minDriverVersion": { "type": "string", "pattern": "^[0-9]+(\\.[0-9]+)*$" },
-        "libcudaPath": { "$ref": "#/definitions/absolutePath" },
-        "libnvidiaMLPath": { "$ref": "#/definitions/absolutePath" },
-        "nvidiaSMIPath": { "$ref": "#/definitions/absolutePath" }
+        "minDriverVersion": {
+          "type": "string",
+          "pattern": "^[0-9]+(\\.[0-9]+)*$"
+        },
+        "libcudaPath": {
+          "$ref": "#/definitions/absolutePath"
+        },
+        "libnvidiaMLPath": {
+          "$ref": "#/definitions/absolutePath"
+        },
+        "nvidiaSMIPath": {
+          "$ref": "#/definitions/absolutePath"
+        }
       }
     },
     "kubelet": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["pluginDirRoot", "registrarDir"],
+      "required": [
+        "pluginDirRoot",
+        "registrarDir"
+      ],
       "properties": {
-        "pluginDirRoot": { "$ref": "#/definitions/absolutePath" },
-        "registrarDir": { "$ref": "#/definitions/absolutePath" }
+        "pluginDirRoot": {
+          "$ref": "#/definitions/absolutePath"
+        },
+        "registrarDir": {
+          "$ref": "#/definitions/absolutePath"
+        }
       }
     },
     "cdi": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["specDir"],
-      "properties": { "specDir": { "$ref": "#/definitions/absolutePath" } }
+      "required": [
+        "specDir"
+      ],
+      "properties": {
+        "specDir": {
+          "$ref": "#/definitions/absolutePath"
+        }
+      }
     },
     "tests": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["enabled", "image", "timeoutSeconds"],
+      "required": [
+        "enabled",
+        "image",
+        "timeoutSeconds"
+      ],
       "properties": {
-        "enabled": { "type": "boolean" },
-        "image": { "$ref": "#/definitions/image" },
-        "timeoutSeconds": { "type": "integer", "minimum": 1 }
+        "enabled": {
+          "type": "boolean"
+        },
+        "image": {
+          "$ref": "#/definitions/image"
+        },
+        "timeoutSeconds": {
+          "type": "integer",
+          "minimum": 1
+        }
       }
     }
   }

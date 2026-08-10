@@ -14,7 +14,7 @@ VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
 
 # Container images.
-REGISTRY       ?= thundercompute
+REGISTRY       ?= ghcr.io/thunder-compute/thunder-device-plugin
 DAEMON_IMAGE   ?= $(REGISTRY)/thunder-device-plugin-daemon
 OPERATOR_IMAGE ?= $(REGISTRY)/thunder-dra-operator
 IMAGE_TAG      ?= $(VERSION)
@@ -207,8 +207,112 @@ install: ## Install or upgrade the chart (set THUNDER_API_TOKEN)
 	$(HELM) upgrade --install $(RELEASE) $(CHART) --namespace $(NAMESPACE) --wait
 
 .PHONY: uninstall
-uninstall: ## Uninstall the chart
+uninstall: uninstall-confirm ## Uninstall the chart, leaving runtime state behind
 	$(HELM) uninstall $(RELEASE) --namespace $(NAMESPACE) --ignore-not-found
+	@echo
+	@echo "The release is gone. Runtime state is not: ResourceSlices, DeviceClasses,"
+	@echo "ThunderClients, the CRD and namespace $(NAMESPACE) all survive. Use"
+	@echo "'make purge' to remove those too."
+
+# uninstall-confirm names the cluster and spells out what survives, then blocks
+# until the operator types the context name. Set YES=1 for automation.
+#
+# Uninstalling is not just "stop running pods": it removes the only two things
+# that can revoke a Thunder enrollment or release a ThunderClient finalizer, and
+# it leaves inventory published that no driver can serve.
+.PHONY: uninstall-confirm
+uninstall-confirm:
+	@# `|| true` matters: with the CRD absent kubectl fails, and pipefail would
+	@# abort the recipe with a bare "Error 1" instead of reading as zero clients.
+	@clients="$$($(KUBECTL) get clients.thundercompute.com -A --no-headers --ignore-not-found 2>/dev/null | wc -l || true)"; \
+	if [[ "$$clients" -gt 0 && "$${FORCE:-}" != "1" ]]; then \
+		echo; \
+		echo "$$clients ThunderClient(s) still exist, so claims are still prepared."; \
+		echo "Removing the driver now would:"; \
+		echo "  - leave those Thunder enrollments with nothing to revoke them"; \
+		echo "  - leave their finalizers with nothing to release, so the resources"; \
+		echo "    become undeletable and 'kubectl delete namespace $(NAMESPACE)' hangs"; \
+		echo; \
+		echo "Delete the workloads holding the claims first, while the driver is still"; \
+		echo "installed. To uninstall anyway: make uninstall FORCE=1"; \
+		exit 1; \
+	fi
+	@context="$$($(KUBECTL) config current-context 2>/dev/null || echo unknown)"; \
+	echo; \
+	echo "make uninstall will remove, in context '$$context':"; \
+	echo "  - helm release $(RELEASE) in namespace $(NAMESPACE), so the daemon and"; \
+	echo "    operator stop and no new claim can be prepared"; \
+	echo; \
+	echo "It will NOT remove:"; \
+	echo "  - ResourceSlices and DeviceClasses, which keep advertising GPUs that"; \
+	echo "    nothing can serve, so new claims will be allocated and then hang"; \
+	echo "  - ThunderClients, the CRD, or namespace $(NAMESPACE)"; \
+	echo; \
+	$(KUBECTL) get resourceslices,deviceclasses -l app.kubernetes.io/name=thunder-dra-driver 2>/dev/null || true; \
+	echo; \
+	if [[ "$${YES:-}" == "1" ]]; then \
+		echo "YES=1, skipping confirmation."; exit 0; \
+	fi; \
+	if [[ ! -t 0 ]]; then \
+		echo "uninstall needs a terminal to confirm; rerun with YES=1 to skip the prompt."; exit 1; \
+	fi; \
+	read -r -p "Type the context name '$$context' to continue: " reply; \
+	if [[ "$$reply" != "$$context" ]]; then echo "aborted"; exit 1; fi
+
+.PHONY: purge
+purge: purge-confirm ## Uninstall and delete everything the driver wrote at runtime (destructive)
+	@# `helm uninstall` only removes what the release manifest owns. The operator
+	@# and the daemon write ResourceSlices, DeviceClasses, ThunderClients and
+	@# per-claim guest artifacts at runtime, and none of them carry an owner
+	@# reference, so nothing garbage-collects them once the workloads are gone.
+	@# Helm never deletes CRDs either, and the namespace came from `make install`.
+	$(MAKE) uninstall YES=1 FORCE=1
+	$(KUBECTL) delete resourceslices -l app.kubernetes.io/name=thunder-dra-driver --ignore-not-found
+	$(KUBECTL) delete deviceclasses -l app.kubernetes.io/name=thunder-dra-driver --ignore-not-found
+	$(KUBECTL) delete configmap,secret --all-namespaces -l app.kubernetes.io/name=thunder-dra-driver --ignore-not-found
+	@# Dropping the CRD takes every remaining ThunderClient with it.
+	$(KUBECTL) delete crd clients.thundercompute.com --ignore-not-found
+	$(KUBECTL) delete namespace $(NAMESPACE) --ignore-not-found
+	@echo
+	@echo "Cluster state is gone. CDI specs and enrollment tokens still sit on the nodes"
+	@echo "under the kubelet plugin dir; they are inert without the driver, and a"
+	@echo "reinstall rewrites them."
+
+# purge-confirm shows what purge is about to destroy and in which cluster, then
+# blocks until the operator types the context name. Set YES=1 for automation.
+.PHONY: purge-confirm
+purge-confirm:
+	@# `|| true` matters: with the CRD absent kubectl fails, and pipefail would
+	@# abort the recipe with a bare "Error 1" instead of reading as zero clients.
+	@clients="$$($(KUBECTL) get clients.thundercompute.com -A --no-headers --ignore-not-found 2>/dev/null | wc -l || true)"; \
+	if [[ "$$clients" -gt 0 && "$${FORCE:-}" != "1" ]]; then \
+		echo "$$clients ThunderClient(s) still exist, so their claims were never unprepared."; \
+		echo "Deleting them here skips the unenroll call to the Thunder API and leaks those"; \
+		echo "enrollments. Delete the workloads holding the claims while the driver is still"; \
+		echo "installed, then rerun. To purge anyway: make purge FORCE=1"; \
+		exit 1; \
+	fi
+	@context="$$($(KUBECTL) config current-context 2>/dev/null || echo unknown)"; \
+	echo; \
+	echo "make purge will delete, in context '$$context':"; \
+	echo "  - helm release $(RELEASE) in namespace $(NAMESPACE)"; \
+	echo "  - namespace $(NAMESPACE) and everything else in it"; \
+	echo "  - CRD clients.thundercompute.com and all ThunderClient objects"; \
+	echo "  - all ResourceSlices and DeviceClasses labelled thunder-dra-driver"; \
+	echo "  - all per-claim guest ConfigMaps and Secrets, in every namespace"; \
+	echo; \
+	$(KUBECTL) get resourceslices,deviceclasses -l app.kubernetes.io/name=thunder-dra-driver 2>/dev/null || true; \
+	$(KUBECTL) get clients.thundercompute.com -A --ignore-not-found 2>/dev/null || true; \
+	$(KUBECTL) get configmap,secret --all-namespaces -l app.kubernetes.io/name=thunder-dra-driver 2>/dev/null || true; \
+	echo; \
+	if [[ "$${YES:-}" == "1" ]]; then \
+		echo "YES=1, skipping confirmation."; exit 0; \
+	fi; \
+	if [[ ! -t 0 ]]; then \
+		echo "purge needs a terminal to confirm; rerun with YES=1 to skip the prompt."; exit 1; \
+	fi; \
+	read -r -p "Type the context name '$$context' to continue: " reply; \
+	if [[ "$$reply" != "$$context" ]]; then echo "aborted"; exit 1; fi
 
 .PHONY: status
 status: ## Show the driver's cluster state

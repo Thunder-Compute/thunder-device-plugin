@@ -98,6 +98,10 @@ verify_charts() {
   check_not_contains "chart ships no DeviceClass" "kind: DeviceClass" "${main_manifest}"
   check_contains "operator generates per-GPU-type extended resources" \
     "EXTENDED_RESOURCE_PREFIX" "${main_manifest}"
+  # A value that never reaches the container is dead config, and the schema
+  # cannot catch that on its own.
+  check_contains "operator is given the orphan grace period" \
+    "ORPHAN_GRACE_PERIOD" "${main_manifest}"
   check_contains "operator may manage DeviceClasses" "deviceclasses" "${main_manifest}"
   # Sharing is expressed by publishing more devices, never consumable capacity.
   check_not_contains "test charts pin a GPU type by class" "deviceClassName: \"thunder-gpu\"" \

@@ -15,15 +15,21 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 )
 
 type Operator struct {
-	cfg       Config
-	kube      kubernetes.Interface
-	inventory InventorySource
-	logger    *slog.Logger
-	cache     map[poolKey]publishedPool
+	cfg     Config
+	kube    kubernetes.Interface
+	clients dynamic.Interface
+	thunder ThunderAPI
+	logger  *slog.Logger
+	cache   map[poolKey]publishedPool
+	// orphans records when a ThunderClient was first seen without its
+	// ResourceClaim, so reaping can wait out a grace period.
+	orphans map[string]time.Time
+	clock   func() time.Time
 }
 
 type publishedPool struct {
@@ -31,16 +37,20 @@ type publishedPool struct {
 	Generation int64
 }
 
-func New(cfg Config, kube kubernetes.Interface, inventory InventorySource, logger *slog.Logger) *Operator {
+// New builds an operator. clients may be nil, which disables reaping of
+// orphaned ThunderClients.
+func New(cfg Config, kube kubernetes.Interface, clients dynamic.Interface, thunder ThunderAPI, logger *slog.Logger) *Operator {
 	if logger == nil {
 		logger = slog.Default()
 	}
 	return &Operator{
-		cfg:       cfg,
-		kube:      kube,
-		inventory: inventory,
-		logger:    logger,
-		cache:     map[poolKey]publishedPool{},
+		cfg:     cfg,
+		kube:    kube,
+		clients: clients,
+		thunder: thunder,
+		logger:  logger,
+		cache:   map[poolKey]publishedPool{},
+		orphans: map[string]time.Time{},
 	}
 }
 
@@ -69,7 +79,7 @@ func (o *Operator) Sync(ctx context.Context) error {
 		return err
 	}
 
-	desired, err := buildDesiredPools(ctx, o.inventory, o.logger)
+	desired, err := buildDesiredPools(ctx, o.thunder, o.logger)
 	if err != nil {
 		return err
 	}
@@ -107,7 +117,10 @@ func (o *Operator) Sync(ctx context.Context) error {
 
 	// Device classes come last: a class is only useful once the devices it
 	// selects are published.
-	return o.syncDeviceClasses(ctx, desired)
+	if err := o.syncDeviceClasses(ctx, desired); err != nil {
+		return err
+	}
+	return o.reapOrphanedClients(ctx)
 }
 
 // applyPool reconciles every shard of one pool. A pool is published as several

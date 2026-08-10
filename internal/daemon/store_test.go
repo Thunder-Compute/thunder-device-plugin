@@ -3,6 +3,12 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"github.com/Thunder-Compute/thunder-device-plugin/internal/thunderclient"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	dynamicfake "k8s.io/client-go/dynamic/fake"
 	"os"
 	"strings"
 	"testing"
@@ -187,4 +193,75 @@ func TestKubernetesGuestConfigStoreCreateWritesConfigMapAndSecret(t *testing.T) 
 	if err := store.Remove(ctx, artifacts); err != nil {
 		t.Fatalf("idempotent Remove: %v", err)
 	}
+}
+
+func TestUpsertHoldsTheClientWithAFinalizer(t *testing.T) {
+	ctx := context.Background()
+	store, dyn := newTestClientStore(t)
+
+	client := ThunderClient{ClaimUID: types.UID("uid-1"), ClaimName: "pod-gpu", ClaimNamespace: "default"}
+	if err := store.Upsert(ctx, client); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+
+	created := getThunderClient(t, dyn, ThunderClientName(client.ClaimUID))
+	if got := created.GetFinalizers(); len(got) != 1 || got[0] != thunderclient.Finalizer {
+		t.Fatalf("finalizers = %v, want [%s]", got, thunderclient.Finalizer)
+	}
+
+	// An update replaces metadata wholesale, so the finalizer has to survive it
+	// and anything else on the resource has to be left alone.
+	created.SetFinalizers([]string{"example.com/other", thunderclient.Finalizer})
+	if _, err := dyn.Resource(ThunderClientGVR).Namespace("thunder-system").
+		Update(ctx, created, metav1.UpdateOptions{}); err != nil {
+		t.Fatalf("seed extra finalizer: %v", err)
+	}
+	client.GPUType = "A6000"
+	if err := store.Upsert(ctx, client); err != nil {
+		t.Fatalf("second Upsert: %v", err)
+	}
+	if got := getThunderClient(t, dyn, ThunderClientName(client.ClaimUID)).GetFinalizers(); len(got) != 2 {
+		t.Fatalf("finalizers = %v, want both kept", got)
+	}
+}
+
+func TestDeleteReleasesTheFinalizerSoTheClientCanGo(t *testing.T) {
+	ctx := context.Background()
+	store, dyn := newTestClientStore(t)
+
+	client := ThunderClient{ClaimUID: types.UID("uid-1"), ClaimName: "pod-gpu", ClaimNamespace: "default"}
+	if err := store.Upsert(ctx, client); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+	if err := store.Delete(ctx, client.ClaimUID); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+
+	_, err := dyn.Resource(ThunderClientGVR).Namespace("thunder-system").
+		Get(ctx, ThunderClientName(client.ClaimUID), metav1.GetOptions{})
+	if !apierrors.IsNotFound(err) {
+		t.Fatalf("client still present after Delete: %v", err)
+	}
+}
+
+func newTestClientStore(t *testing.T) (*KubernetesThunderClientStore, *dynamicfake.FakeDynamicClient) {
+	t.Helper()
+	scheme := runtime.NewScheme()
+	scheme.AddKnownTypeWithName(
+		ThunderClientGVR.GroupVersion().WithKind("ThunderClientList"),
+		&unstructured.UnstructuredList{},
+	)
+	dyn := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(scheme,
+		map[schema.GroupVersionResource]string{ThunderClientGVR: "ThunderClientList"})
+	return NewKubernetesThunderClientStore(dyn, "thunder-system"), dyn
+}
+
+func getThunderClient(t *testing.T, dyn *dynamicfake.FakeDynamicClient, name string) *unstructured.Unstructured {
+	t.Helper()
+	obj, err := dyn.Resource(ThunderClientGVR).Namespace("thunder-system").
+		Get(context.Background(), name, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("get %s: %v", name, err)
+	}
+	return obj
 }

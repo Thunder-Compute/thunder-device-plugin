@@ -16,6 +16,7 @@ import (
 	"github.com/Thunder-Compute/thunder-device-plugin/internal/version"
 	thunder "github.com/Thunder-Compute/thunder-sdk"
 
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
@@ -48,13 +49,21 @@ func main() {
 		os.Exit(1)
 	}
 
-	inventory, err := thunderClientFromEnv()
+	// The operator reads and writes the ThunderClient custom resource, so it
+	// needs a dynamic client alongside the typed one.
+	clients, err := dynamic.NewForConfig(restConfig)
 	if err != nil {
-		logger.Error("build thunder inventory client", "error", err)
+		logger.Error("build dynamic kubernetes client", "error", err)
 		os.Exit(1)
 	}
 
-	op := operator.New(cfg, kube, inventory, logger)
+	thunderAPI, err := thunderClientFromEnv()
+	if err != nil {
+		logger.Error("build thunder api client", "error", err)
+		os.Exit(1)
+	}
+
+	op := operator.New(cfg, kube, clients, thunderAPI, logger)
 	if err := op.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 		logger.Error("operator stopped", "error", err)
 		os.Exit(1)

@@ -15,17 +15,15 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
+
+	"github.com/Thunder-Compute/thunder-device-plugin/internal/thunderclient"
 )
 
-var ThunderClientGVR = schema.GroupVersionResource{
-	Group:    "thundercompute.com",
-	Version:  "v1alpha1",
-	Resource: "clients",
-}
+// ThunderClientGVR addresses the per-claim ThunderClient resource.
+var ThunderClientGVR = thunderclient.GVR
 
 type KubernetesThunderClientStore struct {
 	Client    dynamic.Interface
@@ -65,24 +63,71 @@ func (s *KubernetesThunderClientStore) Upsert(ctx context.Context, client Thunde
 	resource := s.Client.Resource(ThunderClientGVR).Namespace(s.namespace())
 	current, err := resource.Get(ctx, obj.GetName(), metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
+		obj.SetFinalizers([]string{thunderclient.Finalizer})
 		_, err = resource.Create(ctx, obj, metav1.CreateOptions{})
 		return err
 	}
 	if err != nil {
 		return err
 	}
+	// An update replaces metadata wholesale, so carry over whatever finalizers
+	// the resource already has and make sure ours is among them.
+	obj.SetFinalizers(withFinalizer(current.GetFinalizers()))
 	obj.SetResourceVersion(current.GetResourceVersion())
 	_, err = resource.Update(ctx, obj, metav1.UpdateOptions{})
 	return err
 }
 
+// withFinalizer returns finalizers including ours, without duplicating it.
+func withFinalizer(finalizers []string) []string {
+	for _, finalizer := range finalizers {
+		if finalizer == thunderclient.Finalizer {
+			return finalizers
+		}
+	}
+	return append(append([]string(nil), finalizers...), thunderclient.Finalizer)
+}
+
+// withoutFinalizer returns finalizers with ours removed.
+func withoutFinalizer(finalizers []string) []string {
+	kept := make([]string, 0, len(finalizers))
+	for _, finalizer := range finalizers {
+		if finalizer != thunderclient.Finalizer {
+			kept = append(kept, finalizer)
+		}
+	}
+	return kept
+}
+
+// Delete releases the finalizer and removes the resource. The caller has
+// already revoked the Thunder enrollment by this point, so holding the resource
+// any longer would serve no purpose.
 func (s *KubernetesThunderClientStore) Delete(ctx context.Context, claimUID types.UID) error {
 	if s.Client == nil {
 		return fmt.Errorf("dynamic client is required")
 	}
-	err := s.Client.Resource(ThunderClientGVR).Namespace(s.namespace()).Delete(ctx, ThunderClientName(claimUID), metav1.DeleteOptions{})
-	if apierrors.IsNotFound(err) {
+	resource := s.Client.Resource(ThunderClientGVR).Namespace(s.namespace())
+	name := ThunderClientName(claimUID)
+
+	current, err := resource.Get(ctx, name, metav1.GetOptions{})
+	switch {
+	case apierrors.IsNotFound(err):
 		return ErrNotFound
+	case err != nil:
+		return err
+	}
+
+	if kept := withoutFinalizer(current.GetFinalizers()); len(kept) != len(current.GetFinalizers()) {
+		updated := current.DeepCopy()
+		updated.SetFinalizers(kept)
+		if _, err := resource.Update(ctx, updated, metav1.UpdateOptions{}); err != nil && !apierrors.IsNotFound(err) {
+			return fmt.Errorf("release finalizer on ThunderClient %s: %w", name, err)
+		}
+	}
+
+	err = resource.Delete(ctx, name, metav1.DeleteOptions{})
+	if apierrors.IsNotFound(err) {
+		return nil
 	}
 	return err
 }
