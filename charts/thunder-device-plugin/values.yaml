@@ -91,9 +91,12 @@ dra:
 cdi:
   specDir: /var/run/cdi
 
-nodeSelector:
-  thundercompute.com/node: "true"
-  nvidia.com/gpu.present: "true"
+# Extra scheduling constraints for the daemon. The Thunder node label and the
+# zone label are already required through node affinity, and the daemon verifies
+# the GPU itself at startup, so nothing needs to be listed here by default. Add
+# entries if you want to narrow it further, e.g. nvidia.com/gpu.present: "true"
+# when you run NVIDIA GPU Feature Discovery.
+nodeSelector: {}
 
 nodeLabelKeys:
   # Label that marks a node as Thunder-eligible. The DaemonSet requires it in

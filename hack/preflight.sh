@@ -107,13 +107,6 @@ else
       fi
     fi
 
-    gpu_present="$(kube get node "${node}" -o jsonpath='{.metadata.labels.nvidia\.com/gpu\.present}' 2>/dev/null || true)"
-    if [[ "${gpu_present}" == "true" ]]; then
-      check_pass "node/${node} reports an NVIDIA GPU"
-    else
-      check_fail "node/${node} reports an NVIDIA GPU" \
-        "kubectl label node ${node} nvidia.com/gpu.present=true"
-    fi
   done
 fi
 

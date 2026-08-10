@@ -267,34 +267,44 @@ helm install thunder-vm charts/tests/vm --set gpu.type=A6000 --set gpu.count=1
 
 ## GPU types
 
-**Resource types are generated from Thunder inventory.** Enroll a node with a GPU
-model no zone has served before, and its class, pool and extended resource appear
-within one reconcile (default `60s`). Retire the last one and they are removed.
+Each GPU model gets its own `DeviceClass` and extended resource, generated from
+Thunder inventory. **Kubernetes labels never carry the GPU model** — it is
+detected on the host and reported by Thunder:
 
 ```text
-label node → daemon enrolls it → Thunder reports the host → operator reconciles
-                                                          → thunder-gpu-h100
-                                                          → thundercompute.com/gpu-h100
+1. thunderd detects the GPUs on the host        4x A6000
+2. Thunder API inventory reports them           {gpuType: "A6000", gpuCount: 4}
+3. operator groups inventory by zone + model    local-zone / a6000
+4. operator creates the class and resource      thunder-gpu-a6000
+                                                thundercompute.com/gpu-a6000
 ```
 
-Adding a Kubernetes node is not the trigger; enrolling it with Thunder is.
+The daemon does step 1 indirectly: it runs the Thunder installer on the host,
+and `thunderd` inspects the hardware and registers it. The daemon's own
+`nvidia-smi` checks only verify that a GPU and a recent enough driver exist — it
+never reads the model, and neither does the operator.
+
+So a model no zone has served before becomes requestable within one reconcile
+(default `60s`) of the node being **enrolled with Thunder**. Adding a Kubernetes
+node is not the trigger. Retiring the last GPU of a model removes its class and
+pool the same way.
 
 ```bash
 kubectl get deviceclasses -l app.kubernetes.io/name=thunder-dra-driver --watch
 ```
 
-**Every request must name a GPU model.** There is deliberately no catch-all class
-or `thundercompute.com/gpu` resource. A `DeviceClass` has only per-device
-selectors and no `matchAttribute` constraint, so an "any GPU" request could be
-satisfied with a mix of models — and one Thunder client is enrolled with exactly
-one model, so a mixed claim is unservable.
+**Every request names a model:**
 
 ```yaml
 resources:
   limits:
-    thundercompute.com/gpu-a6000: 2   # valid
-    thundercompute.com/gpu: 2         # does not exist
+    thundercompute.com/gpu-a6000: 2
 ```
+
+There is deliberately no catch-all class. A `DeviceClass` has only per-device
+selectors and no `matchAttribute` constraint, so an unpinned request could be
+satisfied with a mix of models — and one Thunder client is enrolled with exactly
+one model, so a mixed claim is unservable.
 
 Notes: it polls rather than watches, so new hardware appears within
 `operator.reconcileInterval`. A model that leaves inventory entirely has its class
@@ -326,13 +336,19 @@ kubectl get resourceslices -l app.kubernetes.io/name=thunder-dra-driver \
 
 ## Node setup
 
-Only GPU-serving nodes need labels:
+Only GPU-serving nodes need labels, and only these two:
 
 ```bash
 kubectl label node <node> thundercompute.com/node=true
 kubectl label node <node> topology.kubernetes.io/zone=<zone>
-kubectl label node <node> nvidia.com/gpu.present=true
 ```
+
+Nodes that only *consume* GPUs need nothing. There is no GPU-model label to set:
+the model is detected on the host — see [GPU types](#gpu-types). There is no
+`nvidia.com/gpu.present` requirement either; the daemon verifies the GPU and the
+driver version itself at startup and fails loudly if either is missing, which is
+a better signal than a DaemonSet that silently schedules nothing. Add it to
+`nodeSelector` yourself if you run NVIDIA GPU Feature Discovery.
 
 **Advertised IP** — the address Thunder clients use to reach the node. It
 **defaults to the node's own IP**, so most clusters configure nothing. Resolution

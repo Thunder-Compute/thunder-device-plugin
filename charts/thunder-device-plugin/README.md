@@ -43,7 +43,7 @@ helm test thunder-device-plugin --namespace thunder-system
 | Kubernetes `>=1.34.0` | Enforced by `kubeVersion`; `resource.k8s.io/v1` must be served |
 | `DRAExtendedResource` | Only for the `resources.limits` form. Beta and on by default from 1.36. `ResourceClaim`s need no gate |
 | A Thunder API token | Needs zones, nodes, clients and enrollment-token permissions |
-| Node labels | `thundercompute.com/node=true`, a zone label, `nvidia.com/gpu.present=true` |
+| Node labels | `thundercompute.com/node=true` and a zone label, on GPU-serving nodes only |
 
 ## Installing
 
