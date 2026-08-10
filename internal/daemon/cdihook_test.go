@@ -12,8 +12,21 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 )
+
+// writeTestCABundle stands in for the node's trust store.
+func writeTestCABundle(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "ca-certificates.crt")
+	if err := os.WriteFile(path, []byte("-----BEGIN CERTIFICATE-----\nnode trust store\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
 
 func sha256Hex(data []byte) string {
 	digest := sha256.Sum256(data)
@@ -645,5 +658,164 @@ func TestUnprepareRevokesTheClientTheHookEnrolled(t *testing.T) {
 	}
 	if got := store.StagedClientID(qualifiedName); got != "" {
 		t.Fatalf("StagedClientID after Remove = %q, want empty", got)
+	}
+}
+
+// A burst of pods produces a burst of exchanges. A rate-limited response must
+// cost a retry, not a container.
+func TestExchangeRetriesRateLimitsAndServerFaults(t *testing.T) {
+	for name, status := range map[string]int{
+		"rate limited": http.StatusTooManyRequests,
+		"server fault": http.StatusBadGateway,
+	} {
+		t.Run(name, func(t *testing.T) {
+			attempts := 0
+			mux := http.NewServeMux()
+			mux.HandleFunc("/install.sh", func(w http.ResponseWriter, r *http.Request) {
+				fmt.Fprint(w, installerFixture("http://"+r.Host, sha256Hex([]byte("lib"))))
+			})
+			mux.HandleFunc("/libthunder.so", func(w http.ResponseWriter, r *http.Request) { w.Write([]byte("lib")) })
+			mux.HandleFunc("/api/v1/enrollment-tokens/enroll", func(w http.ResponseWriter, r *http.Request) {
+				attempts++
+				if attempts < 3 {
+					w.WriteHeader(status)
+					return
+				}
+				writeJSON(t, w, map[string]any{
+					"authToken": "auth-token-value",
+					"jwt": clientJWT(t, map[string]any{
+						"orgId": "org-1", "clientId": "client-1", "gpuType": "A6000", "gpuCount": 1,
+					}),
+				})
+			})
+			server := httptest.NewServer(mux)
+			defer server.Close()
+
+			stateDir := filepath.Join(t.TempDir(), "claim-abc")
+			stageToken(t, stateDir, "tr_secret")
+			opts := CDIHookOptions{
+				StateDir: stateDir, CacheDir: t.TempDir(),
+				CentralURL: server.URL, InstallURL: server.URL + "/install.sh",
+				CABundlePath: writeTestCABundle(t),
+			}
+			if err := RunCDIHook(context.Background(), opts, ociStateStdin(t, t.TempDir())); err != nil {
+				t.Fatalf("RunCDIHook: %v", err)
+			}
+			if attempts != 3 {
+				t.Fatalf("exchange attempts = %d, want 3 (two retried, one succeeded)", attempts)
+			}
+		})
+	}
+}
+
+// A spent token is a verdict, not a blip. Retrying it only delays the real
+// error while the container sits in creation.
+func TestExchangeDoesNotRetryARejection(t *testing.T) {
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		w.WriteHeader(http.StatusForbidden)
+		fmt.Fprint(w, `{"error":"enrollment token already used"}`)
+	}))
+	defer server.Close()
+
+	_, err := ExchangeClientEnrollment(context.Background(), nil, server.URL, "", "tr_spent", "claim")
+	if err == nil {
+		t.Fatal("exchange succeeded against a rejecting API")
+	}
+	if isRetryable(err) {
+		t.Fatalf("a 403 was classed retryable: %v", err)
+	}
+	if attempts != 1 {
+		t.Fatalf("attempts = %d, want 1", attempts)
+	}
+}
+
+// Concurrent hooks on a cold node must not each pull the library.
+func TestLibthunderCacheDownloadsOnceUnderConcurrency(t *testing.T) {
+	library := []byte("ELF libthunder payload")
+	downloads := int64(0)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/install.sh", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, installerFixture("http://"+r.Host, sha256Hex(library)))
+	})
+	mux.HandleFunc("/libthunder.so", func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt64(&downloads, 1)
+		time.Sleep(50 * time.Millisecond) // widen the window a herd would race through
+		w.Write(library)
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	// Separate cache instances, as separate hook processes would be.
+	dir := t.TempDir()
+	var wg sync.WaitGroup
+	paths := make([]string, 8)
+	errs := make([]error, 8)
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			cache := &LibthunderCache{Dir: dir, InstallURL: server.URL + "/install.sh"}
+			paths[i], errs[i] = cache.Ensure(context.Background())
+		}(i)
+	}
+	wg.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("Ensure %d: %v", i, err)
+		}
+		if paths[i] != paths[0] {
+			t.Fatalf("Ensure %d returned %q, want %q", i, paths[i], paths[0])
+		}
+	}
+	if got := atomic.LoadInt64(&downloads); got != 1 {
+		t.Fatalf("downloads = %d, want 1 for 8 concurrent callers", got)
+	}
+}
+
+// Teardown must wait for a hook that is mid-stage rather than deleting the
+// token out from under it.
+func TestRemoveWaitsForAnInFlightHook(t *testing.T) {
+	store := NewFileCDIDeviceStore(t.TempDir())
+	store.StateDir = t.TempDir()
+	store.ClientInstallCommand = "install"
+
+	allocation := Allocation{
+		ClaimUID: "44444444-4444-4444-4444-444444444444", ClaimName: "claim-d", GPUType: "A6000", GPUCount: 1,
+	}
+	qualifiedName, err := store.Create(context.Background(), allocation, "tr_secret")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	stateDir := store.stateDir(cdiDeviceName(allocation.ClaimUID))
+
+	// Hold the claim lock as a staging hook would.
+	unlock, err := lockStateDir(stateDir)
+	if err != nil {
+		t.Fatalf("lockStateDir: %v", err)
+	}
+
+	removed := make(chan error, 1)
+	go func() { removed <- store.Remove(context.Background(), qualifiedName) }()
+
+	select {
+	case <-removed:
+		t.Fatal("Remove deleted the claim state while a hook held the lock")
+	case <-time.After(150 * time.Millisecond):
+	}
+
+	unlock()
+	select {
+	case err := <-removed:
+		if err != nil {
+			t.Fatalf("Remove: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Remove did not complete after the hook released the lock")
+	}
+	if _, err := os.Stat(stateDir); !os.IsNotExist(err) {
+		t.Fatalf("claim state survived Remove: %v", err)
 	}
 }

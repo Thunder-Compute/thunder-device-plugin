@@ -23,6 +23,9 @@ const (
 	installerReadLimit = int64(1 << 20)
 	// libthunderSizeLimit caps the library download, well above its ~32MB.
 	libthunderSizeLimit = int64(1 << 29)
+
+	// libthunderLockFile serialises downloads into the cache, node-wide.
+	libthunderLockFile = ".download.lock"
 )
 
 // The Thunder installer pins the libthunder.so it would install by SHA-256 and
@@ -168,6 +171,21 @@ func (c *LibthunderCache) Ensure(ctx context.Context) (string, error) {
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return "", fmt.Errorf("create libthunder cache dir: %w", err)
+	}
+
+	// One download per node, not one per container. A burst of pods starting
+	// on a cold node would otherwise pull the same ~32MB library concurrently,
+	// once per hook. The losers block here and find the file already cached.
+	unlock, err := lockFile(filepath.Join(filepath.Dir(path), libthunderLockFile), "libthunder cache")
+	if err != nil {
+		return "", err
+	}
+	defer unlock()
+
+	// Re-check under the lock: whoever held it before us may have finished the
+	// very download this call was about to start.
+	if info, err := os.Stat(path); err == nil && info.Size() > 0 {
+		return path, nil
 	}
 
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, artifact.URL, nil)

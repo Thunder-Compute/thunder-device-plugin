@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math/rand/v2"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -30,6 +31,13 @@ const (
 	// cdiHookTimeout bounds the whole hook. Container creation blocks on it,
 	// so it has to fail rather than hang when Thunder is unreachable.
 	cdiHookTimeout = 90 * time.Second
+
+	// A burst of pods starting together produces a burst of enrollment
+	// exchanges. Without a retry, one rate-limited response turns a busy
+	// moment into a container that fails to start.
+	exchangeAttempts     = 5
+	exchangeInitialDelay = 500 * time.Millisecond
+	exchangeMaxDelay     = 8 * time.Second
 )
 
 // ociState is the part of the OCI runtime state the hook is handed on stdin.
@@ -184,8 +192,7 @@ func clientConfigForClaim(ctx context.Context, opts CDIHookOptions) (ThunderClie
 	if clientName == "" {
 		clientName = filepath.Base(opts.StateDir)
 	}
-	config, err := ExchangeClientEnrollment(ctx, &http.Client{Timeout: cdiHookTimeout},
-		opts.CentralURL, opts.TelemetryURL, strings.TrimSpace(string(token)), clientName)
+	config, err := exchangeWithRetry(ctx, opts, strings.TrimSpace(string(token)), clientName)
 	if err != nil {
 		return ThunderClientConfig{}, err
 	}
@@ -203,18 +210,71 @@ func clientConfigForClaim(ctx context.Context, opts CDIHookOptions) (ThunderClie
 	return config, nil
 }
 
+// exchangeWithRetry spends the enrollment token, retrying the failures another
+// attempt could get past. A rejection is returned immediately: retrying an
+// already-spent token only delays the real error and holds up the container.
+//
+// The whole loop lives inside the hook's deadline, so a node that cannot reach
+// Thunder fails the container rather than retrying until the runtime kills it.
+func exchangeWithRetry(ctx context.Context, opts CDIHookOptions, token, clientName string) (ThunderClientConfig, error) {
+	httpClient := &http.Client{Timeout: cdiHookTimeout}
+	delay := exchangeInitialDelay
+
+	var err error
+	for attempt := 1; attempt <= exchangeAttempts; attempt++ {
+		var config ThunderClientConfig
+		config, err = ExchangeClientEnrollment(ctx, httpClient,
+			opts.CentralURL, opts.TelemetryURL, token, clientName)
+		if err == nil {
+			return config, nil
+		}
+		if !isRetryable(err) || attempt == exchangeAttempts {
+			return ThunderClientConfig{}, err
+		}
+
+		wait := jitter(delay)
+		// Fail now rather than sleeping into a deadline that will cut the next
+		// attempt off mid-request.
+		if deadline, ok := ctx.Deadline(); ok && time.Until(deadline) < wait+exchangeInitialDelay {
+			return ThunderClientConfig{}, err
+		}
+		select {
+		case <-ctx.Done():
+			return ThunderClientConfig{}, err
+		case <-time.After(wait):
+		}
+		if delay < exchangeMaxDelay {
+			delay *= 2
+		}
+	}
+	return ThunderClientConfig{}, err
+}
+
+// jitter spreads retries so a burst of hooks does not resynchronise on the
+// same backoff schedule and hit Thunder in lockstep.
+func jitter(delay time.Duration) time.Duration {
+	return delay/2 + time.Duration(rand.Int64N(int64(delay)))
+}
+
 // lockStateDir serialises hooks staging the same claim.
 func lockStateDir(stateDir string) (func(), error) {
 	if err := os.MkdirAll(stateDir, 0o700); err != nil {
 		return nil, fmt.Errorf("create claim state dir: %w", err)
 	}
-	lock, err := os.OpenFile(filepath.Join(stateDir, thunderLockFile), os.O_CREATE|os.O_RDWR, 0o600)
+	return lockFile(filepath.Join(stateDir, thunderLockFile), "claim state")
+}
+
+// lockFile takes an exclusive advisory lock, blocking until it is granted, and
+// returns the release. The lock is held on a file descriptor, so it is released
+// even if the process is killed.
+func lockFile(path, what string) (func(), error) {
+	lock, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
-		return nil, fmt.Errorf("open claim state lock: %w", err)
+		return nil, fmt.Errorf("open %s lock: %w", what, err)
 	}
 	if err := unix.Flock(int(lock.Fd()), unix.LOCK_EX); err != nil {
 		lock.Close()
-		return nil, fmt.Errorf("lock claim state dir: %w", err)
+		return nil, fmt.Errorf("lock %s: %w", what, err)
 	}
 	return func() {
 		_ = unix.Flock(int(lock.Fd()), unix.LOCK_UN)

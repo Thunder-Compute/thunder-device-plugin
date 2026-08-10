@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -24,7 +25,11 @@ type recordedRequest struct {
 // test can assert on the requests the daemon makes rather than only on what it
 // does with the responses.
 type recordingRegistry struct {
-	server   *httptest.Server
+	server *httptest.Server
+
+	// The handlers run on the http server's goroutines while the test polls
+	// from its own, so everything they share is guarded.
+	mu       sync.Mutex
 	requests []recordedRequest
 	zones    []map[string]any
 }
@@ -36,12 +41,12 @@ func newRecordingRegistry(t *testing.T) *recordingRegistry {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/v1/zones", func(w http.ResponseWriter, r *http.Request) {
 		registry.record(t, r)
-		writeJSON(t, w, map[string]any{"zones": registry.zones})
+		writeJSON(t, w, map[string]any{"zones": registry.listZones()})
 	})
 	mux.HandleFunc("POST /api/v1/zones/ensure", func(w http.ResponseWriter, r *http.Request) {
 		body := registry.record(t, r)
 		name, _ := body["displayName"].(string)
-		registry.zones = append(registry.zones, map[string]any{"zoneId": "zone-1", "displayName": name})
+		registry.addZone(map[string]any{"zoneId": "zone-1", "displayName": name})
 		writeJSON(t, w, map[string]any{"zoneId": "zone-1", "displayName": name})
 	})
 	mux.HandleFunc("POST /api/v1/enrollment-tokens", func(w http.ResponseWriter, r *http.Request) {
@@ -74,12 +79,29 @@ func (r *recordingRegistry) record(t *testing.T, req *http.Request) map[string]a
 	if raw, err := io.ReadAll(req.Body); err == nil && len(raw) > 0 {
 		_ = json.Unmarshal(raw, &recorded.Body)
 	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.requests = append(r.requests, recorded)
 	return recorded.Body
 }
 
+func (r *recordingRegistry) listZones() []map[string]any {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]map[string]any(nil), r.zones...)
+}
+
+func (r *recordingRegistry) addZone(zone map[string]any) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.zones = append(r.zones, zone)
+}
+
 // writes returns only the requests that changed state.
 func (r *recordingRegistry) writes() []recordedRequest {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
 	var out []recordedRequest
 	for _, request := range r.requests {
 		if request.Method != http.MethodGet {
@@ -307,13 +329,13 @@ func TestRunEnrollsTheServerWithItsAdvertisedIPAndZone(t *testing.T) {
 	// The installer has to be handed the address clients will reach this node
 	// on, which defaulted to the node's own IP.
 	var install string
-	for _, command := range runner.commands {
+	for _, command := range runner.recordedCommands() {
 		if strings.Contains(command, "THUNDER_INSTALL_MODE=thunderd") {
 			install = command
 		}
 	}
 	if install == "" {
-		t.Fatalf("the installer was never run; commands = %#v", runner.commands)
+		t.Fatalf("the installer was never run; commands = %#v", runner.recordedCommands())
 	}
 	for _, want := range []string{"token-secret-server", "10.0.0.5", "us-west-2a", "node-a"} {
 		if !strings.Contains(install, want) {

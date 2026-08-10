@@ -8,6 +8,7 @@ import (
 	"os"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 
 	thunder "github.com/Thunder-Compute/thunder-sdk"
@@ -429,29 +430,44 @@ func TestNvidiaChecksUsesNodePathsAndNvidiaSMI(t *testing.T) {
 	if driver != "535.104.05" {
 		t.Fatalf("driver = %q, want 535.104.05", driver)
 	}
-	if !reflect.DeepEqual(runner.commands, []string{
+	if !reflect.DeepEqual(runner.recordedCommands(), []string{
 		"/nvidia-smi --query-gpu=driver_version --format=csv,noheader,nounits",
 		"/nvidia-smi --query-gpu=index --format=csv,noheader,nounits",
 	}) {
-		t.Fatalf("commands = %#v", runner.commands)
+		t.Fatalf("commands = %#v", runner.recordedCommands())
 	}
 }
 
 type fakeRunner struct {
-	outputs  map[string][]byte
-	errors   map[string]error
+	outputs map[string][]byte
+	errors  map[string]error
+
+	// The daemon runs its reconcile loop on its own goroutine while a test
+	// inspects what it ran, so the record is guarded.
+	mu       sync.Mutex
 	commands []string
+}
+
+// recordedCommands is a snapshot of what the daemon asked the host to run.
+func (r *fakeRunner) recordedCommands() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.commands...)
 }
 
 func (r *fakeRunner) CombinedOutput(_ context.Context, name string, args ...string) ([]byte, error) {
 	key := commandKey(name, args...)
+	r.mu.Lock()
 	r.commands = append(r.commands, key)
+	r.mu.Unlock()
 	return r.outputs[key], r.errors[key]
 }
 
 // RunShell records the command so a test can assert on what the daemon asked
 // the host to run, such as the Thunder installer and its environment.
 func (r *fakeRunner) RunShell(_ context.Context, command string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.commands = append(r.commands, command)
 	return nil
 }
