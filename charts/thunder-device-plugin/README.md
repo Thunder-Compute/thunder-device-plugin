@@ -116,6 +116,7 @@ typos and wrong types fail at install time rather than silently doing nothing.
 | `operator.image.tag` | string | `latest` | Operator image tag |
 | `operator.image.pullPolicy` | string | `IfNotPresent` | Operator image pull policy |
 | `operator.reconcileInterval` | string | `60s` | How often Thunder inventory is polled |
+| `operator.orphanGracePeriod` | string | `5m` | How long a per-claim client resource may outlive its `ResourceClaim` before its Thunder enrollment is revoked and the resource removed |
 | `operator.extendedResourcePrefix` | string | `thundercompute.com/gpu-` | Prefix for the extended resource of each GPU model. `""` publishes classes without them, for clusters below 1.36 |
 | `operator.podAnnotations` | object | `{}` | Annotations for operator pods |
 | `operator.podLabels` | object | `{}` | Labels for operator pods |
@@ -171,6 +172,23 @@ address, for example behind NAT.
 | `tests.image.tag` | string | `v1.34.0` | Test image tag |
 | `tests.image.pullPolicy` | string | `IfNotPresent` | Test image pull policy |
 | `tests.timeoutSeconds` | int | `120` | How long the test waits for inventory |
+
+## Leaked enrollments
+
+Each prepared claim gets a `clients.thundercompute.com` resource recording the
+Thunder enrollment behind it. It carries a finalizer, so deleting it — or the
+namespace holding it — cannot quietly drop the only record of a live enrollment:
+the daemon's cleanup treats a missing resource as nothing to do, which would
+leave the enrollment consuming zone capacity forever.
+
+The daemon releases the finalizer during normal teardown. When it cannot, for
+example because the node is gone, the operator revokes the enrollment and
+removes the resource once its `ResourceClaim` has been absent for
+`operator.orphanGracePeriod`.
+
+```bash
+kubectl get clients.thundercompute.com -A
+```
 
 ## Security
 

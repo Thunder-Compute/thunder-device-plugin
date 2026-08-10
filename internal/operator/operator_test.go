@@ -17,6 +17,8 @@ import (
 )
 
 type fakeInventory struct {
+	revoked    []string
+	revokeErr  error
 	zones      []thunder.Zone
 	nodes      map[string][]thunder.Server
 	clients    map[string][]thunder.RegisteredClient
@@ -34,6 +36,14 @@ func (f *fakeInventory) ListServers(_ context.Context, zoneID string) ([]thunder
 
 func (f *fakeInventory) ListClients(_ context.Context, zoneID string) ([]thunder.RegisteredClient, error) {
 	return append([]thunder.RegisteredClient(nil), f.clients[zoneID]...), nil
+}
+
+func (f *fakeInventory) UnenrollClient(_ context.Context, enrollmentTokenID string) (thunder.DeleteEnrollmentServerResponse, error) {
+	if f.revokeErr != nil {
+		return thunder.DeleteEnrollmentServerResponse{}, f.revokeErr
+	}
+	f.revoked = append(f.revoked, enrollmentTokenID)
+	return thunder.DeleteEnrollmentServerResponse{EnrollmentTokenID: enrollmentTokenID}, nil
 }
 
 func (f *fakeInventory) ListZoneOversubscriptionTargets(_ context.Context, zoneID string) (thunder.ZoneOversubscriptionTargetsResponse, error) {
@@ -96,7 +106,7 @@ func TestSyncCreatesUpdatesAndDeletesResourceSlices(t *testing.T) {
 		clients: map[string][]thunder.RegisteredClient{},
 	}
 	kube := fake.NewSimpleClientset()
-	op := New(testConfig(), kube, inventory, nil)
+	op := New(testConfig(), kube, nil, inventory, nil)
 
 	if err := op.Sync(ctx); err != nil {
 		t.Fatalf("initial Sync returned error: %v", err)
@@ -383,7 +393,7 @@ func TestBuildDeviceClassPinsGPUType(t *testing.T) {
 func TestSyncDeviceClassesCreatesOnePerGPUTypeAndPrunes(t *testing.T) {
 	ctx := context.Background()
 	kube := fake.NewSimpleClientset()
-	op := New(testConfig(), kube, &fakeInventory{}, nil)
+	op := New(testConfig(), kube, nil, &fakeInventory{}, nil)
 
 	desired := map[poolKey]poolDefinition{
 		{Zone: "us-west-2a", GPUType: "a6000"}: {Zone: "us-west-2a", GPUType: "a6000", Capacity: 2},
@@ -424,7 +434,7 @@ func TestSyncDeviceClassesLeavesUnmanagedClassesAlone(t *testing.T) {
 		},
 	}
 	kube := fake.NewSimpleClientset(chartClass)
-	op := New(testConfig(), kube, &fakeInventory{}, nil)
+	op := New(testConfig(), kube, nil, &fakeInventory{}, nil)
 
 	if err := op.syncDeviceClasses(ctx, map[poolKey]poolDefinition{}); err != nil {
 		t.Fatalf("syncDeviceClasses: %v", err)
@@ -439,7 +449,7 @@ func TestSyncDeviceClassesDisabled(t *testing.T) {
 	kube := fake.NewSimpleClientset()
 	cfg := testConfig()
 	cfg.ExtendedResourcePrefix = ""
-	op := New(cfg, kube, &fakeInventory{}, nil)
+	op := New(cfg, kube, nil, &fakeInventory{}, nil)
 
 	desired := map[poolKey]poolDefinition{
 		{Zone: "us-west-2a", GPUType: "a6000"}: {Zone: "us-west-2a", GPUType: "a6000", Capacity: 2},

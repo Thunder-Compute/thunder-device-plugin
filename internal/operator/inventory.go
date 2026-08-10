@@ -2,6 +2,7 @@ package operator
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math"
@@ -11,11 +12,15 @@ import (
 	thunder "github.com/Thunder-Compute/thunder-sdk"
 )
 
-type InventorySource interface {
+// ThunderAPI is the slice of the Thunder API the operator uses. Everything here
+// is a read except UnenrollClient, which is only called to clean up an
+// enrollment whose ResourceClaim is already gone.
+type ThunderAPI interface {
 	ListZones(ctx context.Context) ([]thunder.Zone, error)
 	ListServers(ctx context.Context, zoneID string) ([]thunder.Server, error)
 	ListClients(ctx context.Context, zoneID string) ([]thunder.RegisteredClient, error)
 	ListZoneOversubscriptionTargets(ctx context.Context, zoneID string) (thunder.ZoneOversubscriptionTargetsResponse, error)
+	UnenrollClient(ctx context.Context, enrollmentTokenID string) (thunder.DeleteEnrollmentServerResponse, error)
 }
 
 type poolKey struct {
@@ -38,7 +43,7 @@ type poolDefinition struct {
 	Capacity int64
 }
 
-func buildDesiredPools(ctx context.Context, inventory InventorySource, logger *slog.Logger) (map[poolKey]poolDefinition, error) {
+func buildDesiredPools(ctx context.Context, inventory ThunderAPI, logger *slog.Logger) (map[poolKey]poolDefinition, error) {
 	zones, err := inventory.ListZones(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("list thunder zones: %w", err)
@@ -140,7 +145,7 @@ func (t oversubscriptionTargets) For(gpuType string) float64 {
 // zoneOversubscription reads the zone's targets from Thunder. The targets are
 // advisory capacity policy, so a failure here degrades to no oversubscription
 // rather than failing the whole reconcile.
-func zoneOversubscription(ctx context.Context, inventory InventorySource, zoneID string, logger *slog.Logger) oversubscriptionTargets {
+func zoneOversubscription(ctx context.Context, inventory ThunderAPI, zoneID string, logger *slog.Logger) oversubscriptionTargets {
 	response, err := inventory.ListZoneOversubscriptionTargets(ctx, zoneID)
 	if err != nil {
 		if logger != nil {
@@ -160,6 +165,19 @@ func zoneOversubscription(ctx context.Context, inventory InventorySource, zoneID
 		}
 	}
 	return targets
+}
+
+// isGone reports whether an error means Thunder no longer has the object, in
+// which case the desired state has already been reached.
+func isGone(err error) bool {
+	if err == nil {
+		return false
+	}
+	if thunder.IsNotFound(err) {
+		return true
+	}
+	var apiErr *thunder.APIError
+	return errors.As(err, &apiErr) && apiErr.StatusCode == 410
 }
 
 // oversubscribed applies a fractional target to a physical GPU count. It rounds

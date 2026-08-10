@@ -450,6 +450,7 @@ misspelled `--set` key fails the install.
 | `thunder.apiURL` | `https://registry.thundercompute.com` | Thunder API endpoint |
 | `operator.extendedResourcePrefix` | `thundercompute.com/gpu-` | Prefix for per-model extended resources; `""` for clusters below 1.36 |
 | `operator.reconcileInterval` | `60s` | How quickly inventory and targets are picked up |
+| `operator.orphanGracePeriod` | `5m` | How long a client resource may outlive its claim before being revoked |
 | `nvidia.minDriverVersion` | `610` | Daemon refuses older drivers |
 | `kubelet.pluginDirRoot` | `/var/lib/kubelet/plugins` | Change on distributions that move the kubelet root |
 
@@ -470,6 +471,12 @@ make image         # multi-stage builds from source
 | `make helm-lint` / `helm-schema` / `helm-package` | Chart checks and packaging |
 | `make verify` / `test-local` / `preflight` | See [`hack/`](hack/) |
 | `make install` / `uninstall` / `status` / `logs` | Operate a deployment |
+| `make purge` | Remove the release *and* everything the driver wrote at runtime |
+
+`make uninstall` and `make purge` name the cluster and wait for you to type its
+context back. Both refuse outright while any `clients.thundercompute.com` still
+exists, because removing the driver then would strand Thunder enrollments with
+nothing to revoke them. Override with `FORCE=1`, skip the prompt with `YES=1`.
 
 `make test-local` needs `docker` and [kind](https://kind.sigs.k8s.io) — no
 existing cluster, Thunder account, API token or GPU. It runs the real operator
@@ -489,6 +496,7 @@ Details in [`hack/README.md`](hack/README.md).
 | Pool bigger than the GPU count | Zone oversubscription target above 1 | See [Oversubscription](#oversubscription) |
 | Daemon will not start | No zone label, or no node IP | `kubectl get node <node> -o wide` |
 | VM boots without a GPU | Guest artifacts not mounted | `kubectl get cm,secret \| grep <claim-name>-thunder` |
+| Client resource stuck `Terminating` | Its `ResourceClaim` still exists; the finalizer holds it until the enrollment is revoked | `kubectl get clients.thundercompute.com -A -o wide` |
 | No slices at all | Operator cannot reach Thunder | `kubectl -n thunder-system logs -l app.kubernetes.io/component=operator` |
 
 ## Repository layout

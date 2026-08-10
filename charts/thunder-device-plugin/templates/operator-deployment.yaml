@@ -40,6 +40,8 @@ spec:
               value: {{ .Values.node.zoneLabel | quote }}
             - name: RECONCILE_INTERVAL
               value: {{ .Values.operator.reconcileInterval | quote }}
+            - name: ORPHAN_GRACE_PERIOD
+              value: {{ .Values.operator.orphanGracePeriod | quote }}
             - name: EXTENDED_RESOURCE_PREFIX
               value: {{ .Values.operator.extendedResourcePrefix | quote }}
             - name: THUNDER_API_URL

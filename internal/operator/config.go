@@ -15,6 +15,12 @@ const (
 	// DefaultDeviceClassPrefix and DefaultExtendedResourcePrefix name the
 	// per-GPU-type DeviceClasses the operator generates, so a workload can ask
 	// for a specific model by resource name.
+	// DefaultOrphanGracePeriod is how long a ThunderClient may exist without
+	// its ResourceClaim before the operator revokes and removes it. A claim is
+	// deleted slightly before the kubelet finishes unpreparing it, so reaping
+	// immediately could cut a workload off mid-shutdown.
+	DefaultOrphanGracePeriod = 5 * time.Minute
+
 	DefaultDeviceClassPrefix      = "thunder-gpu-"
 	DefaultExtendedResourcePrefix = "thundercompute.com/gpu-"
 )
@@ -28,6 +34,9 @@ type Config struct {
 	// DeviceClasses. An empty ExtendedResourcePrefix disables them.
 	DeviceClassPrefix      string
 	ExtendedResourcePrefix string
+	// OrphanGracePeriod is how long a ThunderClient may outlive its
+	// ResourceClaim before it is revoked and removed.
+	OrphanGracePeriod time.Duration
 }
 
 func ConfigFromEnv() (Config, error) {
@@ -36,10 +45,22 @@ func ConfigFromEnv() (Config, error) {
 		NamePrefix:        envOrDefault("RESOURCE_SLICE_NAME_PREFIX", DefaultNamePrefix),
 		ZoneLabelKey:      envOrDefault("NODE_ZONE_LABEL", DefaultZoneLabelKey),
 		ReconcileInterval: 60 * time.Second,
+		OrphanGracePeriod: DefaultOrphanGracePeriod,
 		DeviceClassPrefix: envOrDefault("DEVICE_CLASS_PREFIX", DefaultDeviceClassPrefix),
 		// Explicitly empty disables per-GPU-type classes, so only look at the
 		// default when the variable is unset.
 		ExtendedResourcePrefix: envOrDefaultAllowEmpty("EXTENDED_RESOURCE_PREFIX", DefaultExtendedResourcePrefix),
+	}
+
+	if raw := os.Getenv("ORPHAN_GRACE_PERIOD"); raw != "" {
+		grace, err := time.ParseDuration(raw)
+		if err != nil {
+			return Config{}, fmt.Errorf("parse ORPHAN_GRACE_PERIOD: %w", err)
+		}
+		if grace < 0 {
+			return Config{}, fmt.Errorf("ORPHAN_GRACE_PERIOD must not be negative, got %s", grace)
+		}
+		cfg.OrphanGracePeriod = grace
 	}
 
 	if raw := os.Getenv("RECONCILE_INTERVAL"); raw != "" {

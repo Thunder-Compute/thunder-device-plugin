@@ -21,64 +21,23 @@ func Run(ctx context.Context, cfg Config) error {
 }
 
 func run(ctx context.Context, cfg Config, runner commandRunner, nodes nodeInfoReader) error {
-	var err error
-	cfg, err = resolveNodeAttributes(ctx, cfg, nodes)
-	if err != nil {
-		return err
-	}
-	log.Printf("starting thunder daemon %s (%s): node=%s zone=%s advertising=%s",
-		version.Get(), version.Revision(), cfg.Node, cfg.Zone, cfg.AdvertisedIP)
+	log.Printf("starting thunder daemon %s (%s): node=%s",
+		version.Get(), version.Revision(), cfg.Node)
 
 	client := thunder.NewClient(cfg.ThunderAPIURL, cfg.ThunderAPIToken,
 		thunder.WithUserAgent(version.UserAgent("daemon")))
-	zoneID, err := ensureThunderZone(ctx, client, cfg.Zone)
-	if err != nil {
-		return err
-	}
-	log.Printf("resolved thunder zone: kubernetesZone=%s thunderZoneId=%s", cfg.Zone, zoneID)
 
-	status, err := getThunderStatus(ctx, runner)
-	if err != nil {
-		log.Printf("thunder status unavailable before setup: %v", err)
-	} else {
-		logThunderStatus("initial", status)
-		if status.Healthy {
-			log.Printf("thunder is already healthy on node %s; skipping enrollment and installer", cfg.Node)
-			if err := startDRAPlugin(ctx, cfg, client, zoneID); err != nil {
-				return err
-			}
-			return monitorThunderStatus(ctx, runner, ThunderStatusInterval)
-		}
+	// Everything the node needs is driven by the reconcile loop rather than by
+	// a one-shot startup sequence, so the daemon recovers on its own when
+	// thunderd is removed, reinstalled or restarted underneath it.
+	reconciler := &reconciler{
+		cfg:         cfg,
+		runner:      runner,
+		nodes:       nodes,
+		client:      client,
+		startPlugin: startDRAPlugin,
 	}
-
-	gpuCount, driverVersion, err := nvidiaChecks(ctx, cfg, runner)
-	if err != nil {
-		return err
-	}
-	log.Printf("nvidia checks passed: driver=%s physical_gpus=%d", driverVersion, gpuCount)
-
-	token, err := client.CreateServerEnrollment(ctx, thunder.CreateServerEnrollmentRequest{
-		ZoneID: zoneID,
-	})
-	if err != nil {
-		return fmt.Errorf("create thunder node enrollment: %w", err)
-	}
-
-	command := client.ServerEnrollmentCommand(thunder.ServerEnrollmentCommandRequest{
-		EnrollmentToken: token.EnrollmentToken,
-		IP:              cfg.AdvertisedIP,
-		Zone:            cfg.Zone,
-		ServerName:      cfg.Node,
-	})
-	if err := runner.RunShell(ctx, command); err != nil {
-		return fmt.Errorf("run thunder node setup: %w", err)
-	}
-
-	log.Printf("thunder node setup completed: node=%s enrollmentTokenId=%s", cfg.Node, token.EnrollmentTokenID)
-	if err := startDRAPlugin(ctx, cfg, client, zoneID); err != nil {
-		return err
-	}
-	return monitorThunderStatus(ctx, runner, ThunderStatusInterval)
+	return reconciler.loop(ctx, ThunderReconcileInterval, ThunderReconcileMaxBackoff)
 }
 
 func startDRAPlugin(ctx context.Context, cfg Config, thunderClient *thunder.Client, zoneID string) error {

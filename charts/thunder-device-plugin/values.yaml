@@ -33,6 +33,8 @@ operator:
     pullPolicy: IfNotPresent
   # -- How often Thunder inventory is polled. New GPU models and capacity changes appear within this interval.
   reconcileInterval: 60s
+  # -- How long a per-claim client resource may outlive its ResourceClaim before the operator revokes its Thunder enrollment and removes it. A claim is deleted slightly before the kubelet finishes releasing the GPU, so reaping immediately could cut a workload off mid-shutdown.
+  orphanGracePeriod: 5m
   # -- Prefix for the extended resource of each GPU model, so a workload can ask for `thundercompute.com/gpu-a6000: 2`. Set to "" on clusters below 1.36, where workloads use ResourceClaims instead.
   extendedResourcePrefix: thundercompute.com/gpu-
   # -- Annotations added to operator pods.
