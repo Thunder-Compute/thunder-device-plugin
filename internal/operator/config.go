@@ -9,10 +9,19 @@ import (
 )
 
 const (
-	DefaultDriverName    = "thundercompute.com"
-	DefaultNamePrefix    = "thunder"
-	DefaultZoneLabelKey  = "topology.kubernetes.io/zone"
-	DefaultValidGPUCount = "1,2,4,8"
+	DefaultDriverName   = "thundercompute.com"
+	DefaultNamePrefix   = "thunder"
+	DefaultZoneLabelKey = "topology.kubernetes.io/zone"
+
+	// DefaultSharesPerGPU publishes one exclusive claim per GPU. Raising it
+	// oversubscribes each GPU to that many concurrent clients.
+	DefaultSharesPerGPU = 1
+
+	// DefaultDeviceClassPrefix and DefaultExtendedResourcePrefix name the
+	// per-GPU-type DeviceClasses the operator generates, so a workload can ask
+	// for a specific model by resource name.
+	DefaultDeviceClassPrefix      = "thunder-gpu-"
+	DefaultExtendedResourcePrefix = "thundercompute.com/gpu-"
 )
 
 type Config struct {
@@ -20,7 +29,13 @@ type Config struct {
 	NamePrefix        string
 	ZoneLabelKey      string
 	ReconcileInterval time.Duration
-	ValidGPUCounts    []string
+	// SharesPerGPU is how many clients may share one GPU. 1 keeps every GPU
+	// exclusive and publishes no consumable capacity at all.
+	SharesPerGPU int64
+	// DeviceClassPrefix and ExtendedResourcePrefix name the per-GPU-type
+	// DeviceClasses. An empty ExtendedResourcePrefix disables them.
+	DeviceClassPrefix      string
+	ExtendedResourcePrefix string
 }
 
 func ConfigFromEnv() (Config, error) {
@@ -29,7 +44,22 @@ func ConfigFromEnv() (Config, error) {
 		NamePrefix:        envOrDefault("RESOURCE_SLICE_NAME_PREFIX", DefaultNamePrefix),
 		ZoneLabelKey:      envOrDefault("NODE_ZONE_LABEL", DefaultZoneLabelKey),
 		ReconcileInterval: 60 * time.Second,
-		ValidGPUCounts:    splitCSV(envOrDefault("VALID_GPU_COUNTS", DefaultValidGPUCount)),
+		SharesPerGPU:      DefaultSharesPerGPU,
+		DeviceClassPrefix: envOrDefault("DEVICE_CLASS_PREFIX", DefaultDeviceClassPrefix),
+		// Explicitly empty disables per-GPU-type classes, so only look at the
+		// default when the variable is unset.
+		ExtendedResourcePrefix: envOrDefaultAllowEmpty("EXTENDED_RESOURCE_PREFIX", DefaultExtendedResourcePrefix),
+	}
+
+	if raw := os.Getenv("SHARES_PER_GPU"); raw != "" {
+		shares, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil {
+			return Config{}, fmt.Errorf("parse SHARES_PER_GPU: %w", err)
+		}
+		if shares < 1 {
+			return Config{}, fmt.Errorf("SHARES_PER_GPU must be at least 1, got %d", shares)
+		}
+		cfg.SharesPerGPU = shares
 	}
 
 	if raw := os.Getenv("RECONCILE_INTERVAL"); raw != "" {
@@ -48,13 +78,25 @@ func ConfigFromEnv() (Config, error) {
 	if cfg.ZoneLabelKey == "" {
 		return Config{}, fmt.Errorf("NODE_ZONE_LABEL is required")
 	}
-	for _, value := range cfg.ValidGPUCounts {
-		parsed, err := strconv.ParseInt(value, 10, 64)
-		if err != nil || parsed <= 0 {
-			return Config{}, fmt.Errorf("VALID_GPU_COUNTS must contain positive integers, got %q", value)
+	if cfg.ExtendedResourcePrefix != "" {
+		if cfg.DeviceClassPrefix == "" {
+			return Config{}, fmt.Errorf("DEVICE_CLASS_PREFIX is required when EXTENDED_RESOURCE_PREFIX is set")
+		}
+		if !strings.Contains(cfg.ExtendedResourcePrefix, "/") {
+			return Config{}, fmt.Errorf("EXTENDED_RESOURCE_PREFIX must be a domain-qualified prefix such as %q, got %q",
+				DefaultExtendedResourcePrefix, cfg.ExtendedResourcePrefix)
 		}
 	}
 	return cfg, nil
+}
+
+// envOrDefaultAllowEmpty treats an explicitly empty variable as a real value,
+// so a setting can be switched off rather than falling back to its default.
+func envOrDefaultAllowEmpty(key, fallback string) string {
+	if value, ok := os.LookupEnv(key); ok {
+		return value
+	}
+	return fallback
 }
 
 func envOrDefault(key, fallback string) string {
@@ -62,15 +104,4 @@ func envOrDefault(key, fallback string) string {
 		return value
 	}
 	return fallback
-}
-
-func splitCSV(raw string) []string {
-	parts := strings.Split(raw, ",")
-	values := make([]string, 0, len(parts))
-	for _, part := range parts {
-		if value := strings.TrimSpace(part); value != "" {
-			values = append(values, value)
-		}
-	}
-	return values
 }

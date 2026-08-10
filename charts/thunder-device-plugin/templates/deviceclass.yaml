@@ -7,6 +7,9 @@ metadata:
     app.kubernetes.io/name: thunder-dra-driver
     app.kubernetes.io/component: device-class
 spec:
+  {{- with .Values.deviceClass.extendedResourceName }}
+  extendedResourceName: {{ . | quote }}
+  {{- end }}
   selectors:
     - cel:
         expression: |

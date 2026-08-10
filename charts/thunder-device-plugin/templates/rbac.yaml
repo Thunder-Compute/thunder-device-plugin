@@ -17,6 +17,10 @@ rules:
   - apiGroups: ["resource.k8s.io"]
     resources: ["resourceclaims"]
     verbs: ["get", "list", "watch"]
+  # The operator generates one DeviceClass per GPU type it finds in inventory.
+  - apiGroups: ["resource.k8s.io"]
+    resources: ["deviceclasses"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   - apiGroups: ["thundercompute.com"]
     resources: ["clients"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]

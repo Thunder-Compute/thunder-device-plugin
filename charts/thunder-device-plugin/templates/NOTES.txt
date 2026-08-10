@@ -5,6 +5,7 @@ Components:
   daemon    DaemonSet on nodes labelled {{ .Values.nodeLabelKeys.thunderNode }}=true
   driver    {{ .Values.dra.driverName }}
   class     {{ if .Values.deviceClass.enabled }}{{ .Values.deviceClass.name }}{{ else }}DISABLED - create a DeviceClass yourself{{ end }}
+  sharing   {{ if gt (int .Values.operator.sharesPerGPU) 1 }}{{ .Values.operator.sharesPerGPU }} clients per GPU (needs DRAConsumableCapacity){{ else }}one exclusive claim per GPU{{ end }}
 
 1. Wait for both components to become ready:
 
@@ -21,7 +22,21 @@ Components:
 
      helm test {{ .Release.Name }} --namespace {{ .Values.namespace.name }}
 
-3. Request a GPU from a pod:
+3. Request a GPU from a pod.
+{{- if .Values.operator.extendedResourcePrefix }}
+
+   The simple form, which needs Kubernetes 1.36+. The GPU model is part of the
+   resource name; list what this cluster offers with:
+
+     kubectl get deviceclasses -l app.kubernetes.io/name=thunder-dra-driver \
+       -o custom-columns=CLASS:.metadata.name,RESOURCE:.spec.extendedResourceName
+
+     resources:
+       limits:
+         {{ .Values.operator.extendedResourcePrefix }}<gpu-type>: 2
+{{- end }}
+
+   Or a ResourceClaim, which works on any supported cluster:
 
      apiVersion: resource.k8s.io/v1
      kind: ResourceClaimTemplate
@@ -35,10 +50,10 @@ Components:
                exactly:
                  deviceClassName: {{ .Values.deviceClass.name }}
                  allocationMode: ExactCount
-                 count: 1
-                 capacity:
-                   requests:
-                     {{ .Values.dra.driverName }}/gpu_count: "1"
+                 count: 2          # one device per GPU
+                 selectors:        # pin the GPU model
+                   - cel:
+                       expression: device.attributes["thundercompute.com"]["gpu_type"] == "A6000"
 
 {{- if not .Values.thunder.existingSecret }}
 

@@ -71,7 +71,7 @@
     "operator": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["enabled", "image", "driverName", "resourceSliceNamePrefix", "reconcileInterval", "validGPUCounts"],
+      "required": ["enabled", "image", "driverName", "resourceSliceNamePrefix", "reconcileInterval", "sharesPerGPU", "deviceClassPrefix", "extendedResourcePrefix"],
       "properties": {
         "enabled": { "type": "boolean", "description": "Deploy the ResourceSlice inventory operator." },
         "replicas": { "type": "integer", "minimum": 0 },
@@ -87,11 +87,20 @@
           "pattern": "^[0-9]+(ns|us|ms|s|m|h)$",
           "description": "Go duration between inventory reconciles, e.g. 60s."
         },
-        "validGPUCounts": {
-          "type": "array",
-          "minItems": 1,
-          "items": { "type": "string", "pattern": "^[1-9][0-9]*$" },
-          "description": "GPU counts a single claim is allowed to request."
+        "deviceClassPrefix": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Name prefix for the generated per-GPU-type DeviceClasses."
+        },
+        "extendedResourcePrefix": {
+          "type": "string",
+          "pattern": "^$|^[a-z0-9]([-a-z0-9.]*[a-z0-9])?/[A-Za-z0-9][-A-Za-z0-9_.]*$",
+          "description": "Domain-qualified prefix for per-GPU-type extended resources, e.g. thundercompute.com/gpu-. Empty disables the generated classes."
+        },
+        "sharesPerGPU": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "How many clients may share one GPU. 1 keeps GPUs exclusive and publishes no consumable capacity; above 1 needs Kubernetes 1.36+."
         },
         "podAnnotations": { "$ref": "#/definitions/stringMap" },
         "podLabels": { "$ref": "#/definitions/stringMap" },
@@ -194,6 +203,11 @@
           "minLength": 1,
           "pattern": "^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$",
           "description": "DeviceClass name workloads reference."
+        },
+        "extendedResourceName": {
+          "type": "string",
+          "pattern": "^$|^[a-z0-9]([-a-z0-9.]*[a-z0-9])?/[A-Za-z0-9]([-A-Za-z0-9_.]*[A-Za-z0-9])?$",
+          "description": "Extended resource name workloads may request instead of a ResourceClaim. Empty disables it. Needs Kubernetes 1.36+."
         }
       }
     },

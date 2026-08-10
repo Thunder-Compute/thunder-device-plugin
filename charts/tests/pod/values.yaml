@@ -3,7 +3,7 @@ deviceClassName: thunder-gpu
 
 gpu:
   type: A6000
-  count: "1"
+  count: 1
 
 requestName: gpu
 claimName: gpu

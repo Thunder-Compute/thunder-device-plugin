@@ -37,18 +37,34 @@ What it does:
 
 1. Creates a kind cluster (`kindest/node:v1.36.1` by default) and deletes it
    again at the end.
-2. Confirms the API server preserves consumable capacity requests — without
-   that, every assertion below would be meaningless.
+2. Confirms the API server preserves the extended resource mapping.
 3. Installs the chart, which exercises the CRDs, RBAC and the values schema
    against a real API server.
-4. Starts a stub Thunder API serving synthetic inventory (4x A6000 in one zone).
+4. Starts a stub Thunder API serving synthetic inventory, initially 4x A6000 in
+   one zone. The stub re-reads its inventory file per request, so the test can
+   enroll and retire hardware mid-run.
 5. Runs the **real operator binary** against that stub and the kind cluster,
-   then asserts the published `ResourceSlice`: driver, capacity, zone attribute,
-   shared allocation, and that the request policy was clamped to what the zone
-   can serve.
-6. Installs the pod test chart, and asserts the scheduler allocates the claim
-   to the Thunder driver with the right consumed capacity and pool.
-7. Asserts an over-capacity request (8 GPUs from a 4 GPU zone) never allocates.
+   then asserts the published `ResourceSlice`: driver, one device per GPU,
+   device naming, zone attribute, shard count, and that exclusive GPUs carry no
+   consumable capacity.
+6. Installs the pod test chart, and asserts the scheduler allocates two
+   distinct GPU devices to the claim from the right pool.
+7. Asserts the operator generated a `DeviceClass` per GPU type, each pinning
+   its model with a CEL selector, and that the chart's catch-all class carries
+   no extended resource name.
+8. Adds a second GPU model (H100) to inventory and asserts the operator creates
+   its class, extended resource and pool on its own, and that a pod can request
+   the new resource immediately.
+9. Asserts a `resources.limits: thundercompute.com/gpu-a6000: 2` pod is served
+   from the A6000 zone pool, gets two GPUs of that model only, and that the
+   resource is scheduler-resolved rather than advertised in node `allocatable`.
+10. Asserts a typed request larger than that model's supply stays pending
+    instead of borrowing the other model.
+11. Asserts a request for more GPUs than the zone has never allocates.
+12. Retires the H100s and asserts the class and pool are pruned, leaving the
+    other model untouched.
+13. Restarts the operator with `SHARES_PER_GPU=2` and asserts the GPUs are
+    republished as shareable with the right per-GPU capacity.
 
 ### What it cannot cover
 
@@ -67,9 +83,9 @@ hack/test-local.sh --node-image kindest/node:v1.34.0
 hack/test-local.sh --cluster my-cluster
 ```
 
-The kind config sets `DRAConsumableCapacity: true` explicitly. The gate is beta
-and on by default from Kubernetes 1.36, but setting it keeps older node images
-working.
+The kind config sets `DRAExtendedResource` and `DRAConsumableCapacity`
+explicitly. Both are beta and on by default from Kubernetes 1.36, but setting
+them keeps older node images working.
 
 On failure the script prints the operator log, slices, claims and pods before
 cleaning up.

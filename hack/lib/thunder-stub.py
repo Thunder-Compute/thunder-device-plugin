@@ -2,10 +2,14 @@
 """A stand-in for the Thunder Central API, for local testing only.
 
 Serves the three read endpoints the operator needs to build its inventory, so
-the real operator binary can publish real ResourceSlices without a Thunder
-account. Inventory is passed in as JSON on the command line.
+the real operator binary can publish real ResourceSlices and DeviceClasses
+without a Thunder account.
 
-Usage: thunder-stub.py <port> <inventory-json>
+Inventory is read from a JSON file on every request rather than cached, so a
+test can rewrite the file to simulate hardware being enrolled or removed and
+watch the operator react.
+
+Usage: thunder-stub.py <port> <inventory-file>
 """
 
 import json
@@ -13,22 +17,30 @@ import sys
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import urlparse
 
-INVENTORY = json.loads(sys.argv[2]) if len(sys.argv) > 2 else {}
-ROUTES = {
-    "/api/v1/zones": lambda: {"zones": INVENTORY.get("zones", [])},
-    "/api/v1/hosts": lambda: {"hosts": INVENTORY.get("hosts", [])},
-    "/api/v1/clients": lambda: {"clients": INVENTORY.get("clients", [])},
+INVENTORY_PATH = sys.argv[2]
+KEYS = {
+    "/api/v1/zones": "zones",
+    "/api/v1/hosts": "hosts",
+    "/api/v1/clients": "clients",
 }
+
+
+def read_inventory():
+    try:
+        with open(INVENTORY_PATH) as handle:
+            return json.load(handle)
+    except (OSError, ValueError):
+        return {}
 
 
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
-        route = ROUTES.get(urlparse(self.path).path)
-        if route is None:
+        key = KEYS.get(urlparse(self.path).path)
+        if key is None:
             self.send_response(404)
             self.end_headers()
             return
-        payload = json.dumps(route()).encode()
+        payload = json.dumps({key: read_inventory().get(key, [])}).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(payload)))

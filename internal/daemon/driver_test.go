@@ -8,7 +8,6 @@ import (
 	"time"
 
 	resourcev1 "k8s.io/api/resource/v1"
-	apiresource "k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/fake"
@@ -42,15 +41,18 @@ func TestPrepareResourceClaimsMintsTokenCreatesClientAndReturnsCDI(t *testing.T)
 	if prepared.Err != nil {
 		t.Fatalf("PrepareResourceClaims claim error: %v", prepared.Err)
 	}
-	if len(prepared.Devices) != 1 {
-		t.Fatalf("prepared devices = %d, want 1", len(prepared.Devices))
+	// One entry per allocated GPU, all pointing at the one Thunder client.
+	if len(prepared.Devices) != 4 {
+		t.Fatalf("prepared devices = %d, want 4", len(prepared.Devices))
 	}
-	device := prepared.Devices[0]
-	if device.PoolName != "us-west-2a/a6000" || device.DeviceName != "a6000-capacity" {
-		t.Fatalf("device = %#v", device)
-	}
-	if len(device.CDIDeviceIDs) != 1 || device.CDIDeviceIDs[0] != "thundercompute.com/gpu=claim-11111111-1111-1111-1111-111111111111" {
-		t.Fatalf("CDI IDs = %#v", device.CDIDeviceIDs)
+	for i, device := range prepared.Devices {
+		wantName := "a6000-" + strconv.Itoa(i)
+		if device.PoolName != "us-west-2a/a6000" || device.DeviceName != wantName {
+			t.Fatalf("device %d = %#v, want device %s", i, device, wantName)
+		}
+		if len(device.CDIDeviceIDs) != 1 || device.CDIDeviceIDs[0] != "thundercompute.com/gpu=claim-11111111-1111-1111-1111-111111111111" {
+			t.Fatalf("device %d CDI IDs = %#v", i, device.CDIDeviceIDs)
+		}
 	}
 	if tokens.minted != 1 {
 		t.Fatalf("minted = %d, want 1", tokens.minted)
@@ -143,7 +145,19 @@ func TestUnprepareResourceClaimsRevokesTokenAndDeletesClient(t *testing.T) {
 	}
 }
 
+// testClaim allocates gpuCount devices, which is how the scheduler represents a
+// multi-GPU claim now that the operator publishes one device per GPU.
 func testClaim(uid types.UID, shareID *types.UID, gpuCount int64) *resourcev1.ResourceClaim {
+	results := make([]resourcev1.DeviceRequestAllocationResult, 0, gpuCount)
+	for i := int64(0); i < gpuCount; i++ {
+		results = append(results, resourcev1.DeviceRequestAllocationResult{
+			Request: "gpu",
+			Driver:  DefaultDriverName,
+			Pool:    "us-west-2a/a6000",
+			Device:  "a6000-" + strconv.FormatInt(i, 10),
+			ShareID: shareID,
+		})
+	}
 	return &resourcev1.ResourceClaim{
 		ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "claim-a", UID: uid},
 		Status: resourcev1.ResourceClaimStatus{
@@ -151,20 +165,7 @@ func testClaim(uid types.UID, shareID *types.UID, gpuCount int64) *resourcev1.Re
 				{Resource: "pods", Name: "pod-a", UID: types.UID("33333333-3333-3333-3333-333333333333")},
 			},
 			Allocation: &resourcev1.AllocationResult{
-				Devices: resourcev1.DeviceAllocationResult{
-					Results: []resourcev1.DeviceRequestAllocationResult{
-						{
-							Request: "gpu",
-							Driver:  DefaultDriverName,
-							Pool:    "us-west-2a/a6000",
-							Device:  "a6000-capacity",
-							ShareID: shareID,
-							ConsumedCapacity: map[resourcev1.QualifiedName]apiresource.Quantity{
-								resourcev1.QualifiedName(GPUCountCapacityName): apiresource.MustParse(strconv.FormatInt(gpuCount, 10)),
-							},
-						},
-					},
-				},
+				Devices: resourcev1.DeviceAllocationResult{Results: results},
 			},
 		},
 	}
@@ -173,18 +174,22 @@ func testClaim(uid types.UID, shareID *types.UID, gpuCount int64) *resourcev1.Re
 func testSlice() *resourcev1.ResourceSlice {
 	gpuType := "A6000"
 	zone := "us-west-2a"
+	devices := make([]resourcev1.Device, 0, 4)
+	for i := 0; i < 4; i++ {
+		devices = append(devices, resourcev1.Device{
+			Name: "a6000-" + strconv.Itoa(i),
+			Attributes: map[resourcev1.QualifiedName]resourcev1.DeviceAttribute{
+				resourcev1.QualifiedName(GPUTypeAttributeName): {StringValue: &gpuType},
+				resourcev1.QualifiedName(ZoneAttributeName):    {StringValue: &zone},
+			},
+		})
+	}
 	return &resourcev1.ResourceSlice{
-		ObjectMeta: metav1.ObjectMeta{Name: "thunder-us-west-2a-a6000"},
+		ObjectMeta: metav1.ObjectMeta{Name: "thunder-us-west-2a-a6000-0"},
 		Spec: resourcev1.ResourceSliceSpec{
-			Driver: DefaultDriverName,
-			Pool:   resourcev1.ResourcePool{Name: "us-west-2a/a6000", Generation: 1, ResourceSliceCount: 1},
-			Devices: []resourcev1.Device{{
-				Name: "a6000-capacity",
-				Attributes: map[resourcev1.QualifiedName]resourcev1.DeviceAttribute{
-					resourcev1.QualifiedName(GPUTypeAttributeName): {StringValue: &gpuType},
-					resourcev1.QualifiedName(ZoneAttributeName):    {StringValue: &zone},
-				},
-			}},
+			Driver:  DefaultDriverName,
+			Pool:    resourcev1.ResourcePool{Name: "us-west-2a/a6000", Generation: 1, ResourceSliceCount: 1},
+			Devices: devices,
 		},
 	}
 }

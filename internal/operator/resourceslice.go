@@ -5,7 +5,6 @@ import (
 	"encoding/hex"
 	"fmt"
 	"regexp"
-	"sort"
 	"strconv"
 	"strings"
 
@@ -25,7 +24,10 @@ const (
 
 	zoneAttributeName    = thunderDomain + "/zone"
 	gpuTypeAttributeName = thunderDomain + "/gpu_type"
-	gpuCountCapacityName = thunderDomain + "/gpu_count"
+
+	// sharesCapacityName counts how many clients may share one GPU. It is only
+	// published when oversubscription is configured.
+	sharesCapacityName = thunderDomain + "/shares"
 
 	// Labels recording the inputs that produced a slice, so a later reconcile
 	// can compare against them without re-querying Thunder.
@@ -33,33 +35,68 @@ const (
 	gpuTypeLabelName        = thunderDomain + "/gpu_type"
 	hostCapacityLabelName   = thunderDomain + "/host-capacity"
 	clientCapacityLabelName = thunderDomain + "/client-capacity"
+	shardLabelName          = thunderDomain + "/shard"
+
+	// devicesPerSlice mirrors resource.ResourceSliceMaxDevices. A zone with
+	// more GPUs than this is published as several slices in one pool.
+	devicesPerSlice = 128
+
+	// maxDNSLabel is the length limit for a device or object name.
+	maxDNSLabel = 63
 )
 
 var invalidDNSLabelRun = regexp.MustCompile(`[^a-z0-9-]+`)
 
-func buildResourceSlice(cfg Config, definition poolDefinition, generation int64) *resourcev1.ResourceSlice {
-	zoneLabel := dnsLabel(definition.Zone)
-	gpuLabel := dnsLabel(definition.GPUType)
-	zone := definition.Zone
-	gpuType := strings.ToUpper(definition.GPUType)
-	allowMultipleAllocations := true
-	requestPolicy := capacityRequestPolicy(cfg.ValidGPUCounts, definition.Capacity)
+// buildResourceSlices renders a zone's GPUs of one type as ResourceSlices.
+//
+// Each GPU is published as its own device, so a workload asks for several GPUs
+// with a device count rather than a capacity request. That is what lets the
+// same pool satisfy the extended resource form (`thundercompute.com/gpu: 2`),
+// which the scheduler always translates into a count of devices.
+//
+// A slice holds at most devicesPerSlice devices, so a large zone is sharded
+// across several slices sharing one pool name and generation.
+func buildResourceSlices(cfg Config, definition poolDefinition, generation int64) []*resourcev1.ResourceSlice {
+	total := definition.Capacity
+	if total <= 0 {
+		return nil
+	}
+	shards := int((total + devicesPerSlice - 1) / devicesPerSlice)
 
+	slices := make([]*resourcev1.ResourceSlice, 0, shards)
+	for shard := 0; shard < shards; shard++ {
+		first := int64(shard) * devicesPerSlice
+		last := first + devicesPerSlice
+		if last > total {
+			last = total
+		}
+
+		devices := make([]resourcev1.Device, 0, last-first)
+		for index := first; index < last; index++ {
+			devices = append(devices, buildDevice(cfg, definition, index))
+		}
+		slices = append(slices, buildSlice(cfg, definition, generation, shard, shards, devices))
+	}
+	return slices
+}
+
+func buildSlice(cfg Config, definition poolDefinition, generation int64, shard, shards int, devices []resourcev1.Device) *resourcev1.ResourceSlice {
 	return &resourcev1.ResourceSlice{
 		TypeMeta: metav1.TypeMeta{
 			APIVersion: resourcev1.SchemeGroupVersion.String(),
 			Kind:       "ResourceSlice",
 		},
 		ObjectMeta: metav1.ObjectMeta{
-			Name: resourceSliceName(cfg.NamePrefix, definition.Zone, definition.GPUType),
+			Name: resourceSliceName(cfg.NamePrefix, definition.Zone, definition.GPUType, shard),
 			Labels: map[string]string{
 				"app.kubernetes.io/name":       driverAppName,
 				"app.kubernetes.io/component":  resourceInventoryComponent,
 				"app.kubernetes.io/managed-by": "thunder-dra-operator",
-				zoneLabelName:                  zoneLabel,
-				gpuTypeLabelName:               gpuLabel,
+				zoneLabelName:                  dnsLabel(definition.Zone),
+				gpuTypeLabelName:               dnsLabel(definition.GPUType),
 				hostCapacityLabelName:          fmt.Sprint(definition.HostCapacity),
 				clientCapacityLabelName:        fmt.Sprint(definition.ClientCapacity),
+				shardLabelName:                 strconv.Itoa(shard),
 			},
 		},
 		Spec: resourcev1.ResourceSliceSpec{
@@ -67,7 +104,7 @@ func buildResourceSlice(cfg Config, definition poolDefinition, generation int64)
 			Pool: resourcev1.ResourcePool{
 				Name:               poolName(definition.Zone, definition.GPUType),
 				Generation:         generation,
-				ResourceSliceCount: 1,
+				ResourceSliceCount: int64(shards),
 			},
 			NodeSelector: &corev1.NodeSelector{
 				NodeSelectorTerms: []corev1.NodeSelectorTerm{
@@ -82,71 +119,53 @@ func buildResourceSlice(cfg Config, definition poolDefinition, generation int64)
 					},
 				},
 			},
-			Devices: []resourcev1.Device{
-				{
-					Name:                     dnsLabel(definition.GPUType) + "-capacity",
-					AllowMultipleAllocations: &allowMultipleAllocations,
-					Attributes: map[resourcev1.QualifiedName]resourcev1.DeviceAttribute{
-						resourcev1.QualifiedName(gpuTypeAttributeName): {
-							StringValue: &gpuType,
-						},
-						resourcev1.QualifiedName(zoneAttributeName): {
-							StringValue: &zone,
-						},
-					},
-					Capacity: map[resourcev1.QualifiedName]resourcev1.DeviceCapacity{
-						resourcev1.QualifiedName(gpuCountCapacityName): {
-							Value:         apiresource.MustParse(fmt.Sprint(definition.Capacity)),
-							RequestPolicy: requestPolicy,
-						},
-					},
-				},
-			},
+			Devices: devices,
 		},
 	}
 }
 
-// capacityRequestPolicy builds the request policy for a device's GPU count.
-//
-// The API server rejects a slice whose validValues contain an option larger
-// than the device capacity, and rejects a default that is not itself a valid
-// value. A zone can easily hold fewer GPUs than the largest configured count,
-// so the configured options are clamped to what the zone can actually serve
-// and the default is the smallest surviving option. When nothing survives the
-// device is published without a request policy rather than not at all.
-func capacityRequestPolicy(validGPUCounts []string, capacity int64) *resourcev1.CapacityRequestPolicy {
-	validValues := make([]apiresource.Quantity, 0, len(validGPUCounts))
-	smallest := int64(0)
-	for _, value := range validGPUCounts {
-		count, err := strconv.ParseInt(value, 10, 64)
-		if err != nil || count <= 0 || count > capacity {
-			continue
+// buildDevice renders one GPU. Without oversubscription the device carries no
+// capacity at all, which keeps the driver on plain DRA and off the consumable
+// capacity feature gate.
+func buildDevice(cfg Config, definition poolDefinition, index int64) resourcev1.Device {
+	zone := definition.Zone
+	gpuType := strings.ToUpper(definition.GPUType)
+
+	device := resourcev1.Device{
+		Name: deviceName(definition.GPUType, index),
+		Attributes: map[resourcev1.QualifiedName]resourcev1.DeviceAttribute{
+			resourcev1.QualifiedName(gpuTypeAttributeName): {StringValue: &gpuType},
+			resourcev1.QualifiedName(zoneAttributeName):    {StringValue: &zone},
+		},
+	}
+
+	if cfg.SharesPerGPU > 1 {
+		allowMultipleAllocations := true
+		one := apiresource.MustParse("1")
+		device.AllowMultipleAllocations = &allowMultipleAllocations
+		device.Capacity = map[resourcev1.QualifiedName]resourcev1.DeviceCapacity{
+			resourcev1.QualifiedName(sharesCapacityName): {
+				Value: apiresource.MustParse(fmt.Sprint(cfg.SharesPerGPU)),
+				// A claim takes one share of each GPU it is allocated; asking
+				// for more GPUs means asking for more devices.
+				RequestPolicy: &resourcev1.CapacityRequestPolicy{
+					Default:     quantityPtr(one),
+					ValidValues: []apiresource.Quantity{one},
+				},
+			},
 		}
-		validValues = append(validValues, apiresource.MustParse(value))
-		if smallest == 0 || count < smallest {
-			smallest = count
-		}
 	}
-	if len(validValues) == 0 {
-		return nil
-	}
-	sort.Slice(validValues, func(i, j int) bool {
-		return validValues[i].Cmp(validValues[j]) < 0
-	})
-	return &resourcev1.CapacityRequestPolicy{
-		Default:     quantityPtr(apiresource.MustParse(fmt.Sprint(smallest))),
-		ValidValues: validValues,
-	}
+	return device
 }
 
-func resourceSliceName(prefix, zone, gpuType string) string {
-	base := dnsLabel(prefix + "-" + zone + "-" + gpuType)
-	if len(base) <= 63 {
-		return base
-	}
-	sum := sha256.Sum256([]byte(base))
-	suffix := hex.EncodeToString(sum[:])[:10]
-	return strings.TrimSuffix(base[:52], "-") + "-" + suffix
+func resourceSliceName(prefix, zone, gpuType string, shard int) string {
+	suffix := "-" + strconv.Itoa(shard)
+	return truncateLabel(dnsLabel(prefix+"-"+zone+"-"+gpuType), maxDNSLabel-len(suffix)) + suffix
+}
+
+func deviceName(gpuType string, index int64) string {
+	suffix := "-" + strconv.FormatInt(index, 10)
+	return truncateLabel(dnsLabel(gpuType), maxDNSLabel-len(suffix)) + suffix
 }
 
 func poolName(zone, gpuType string) string {
@@ -160,15 +179,21 @@ func dnsLabel(value string) string {
 	if label == "" {
 		return "unknown"
 	}
-	if len(label) <= 63 {
+	return truncateLabel(label, maxDNSLabel)
+}
+
+// truncateLabel shortens a label to max characters, keeping it unique by
+// replacing the tail with a hash of the original.
+func truncateLabel(label string, max int) string {
+	if len(label) <= max {
 		return label
 	}
 	sum := sha256.Sum256([]byte(label))
-	suffix := hex.EncodeToString(sum[:])[:10]
-	return strings.TrimSuffix(label[:52], "-") + "-" + suffix
+	hash := hex.EncodeToString(sum[:])[:10]
+	return strings.TrimSuffix(label[:max-len(hash)-1], "-") + "-" + hash
 }
 
 func quantityPtr(value apiresource.Quantity) *apiresource.Quantity {
-	copy := value.DeepCopy()
-	return &copy
+	copied := value.DeepCopy()
+	return &copied
 }

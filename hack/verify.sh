@@ -81,9 +81,20 @@ verify_charts() {
   check_contains "driver name is ${DRIVER_NAME}" "${DRIVER_NAME}" "${main_manifest}"
   check_contains "DeviceClass is ${DEVICE_CLASS_NAME}" "name: \"${DEVICE_CLASS_NAME}\"" "${main_manifest}"
   check_contains "kubelet plugin dir is driver-scoped" "/var/lib/kubelet/plugins/${DRIVER_NAME}" "${main_manifest}"
-  check_contains "capacity is requested as ${GPU_COUNT_CAPACITY}" "${GPU_COUNT_CAPACITY}:" "${pod_manifest}"
-  check_contains "VM claim requests ${GPU_COUNT_CAPACITY}" "${GPU_COUNT_CAPACITY}:" "${vm_manifest}"
+  # One device per GPU, so a claim asks for a device count rather than a
+  # capacity request. This is what lets extended resources request >1 GPU.
+  check_contains "pod claim requests GPUs by device count" "count:" "${pod_manifest}"
+  check_contains "VM claim requests GPUs by device count" "count:" "${vm_manifest}"
+  check_not_contains "no claim uses a gpu_count capacity request" "gpu_count:" "${pod_manifest}${vm_manifest}"
   check_contains "device selector reads ${GPU_TYPE_ATTRIBUTE}" "${GPU_TYPE_ATTRIBUTE}" "${pod_manifest}"
+  # The chart's catch-all class matches every Thunder GPU. Giving it an
+  # extended resource name would let one request mix GPU models, so the
+  # per-GPU-type classes the operator generates carry those names instead.
+  check_not_contains "catch-all DeviceClass exposes no extended resource" \
+    "extendedResourceName" "${main_manifest}"
+  check_contains "operator generates per-GPU-type extended resources" \
+    "EXTENDED_RESOURCE_PREFIX" "${main_manifest}"
+  check_contains "operator may manage DeviceClasses" "deviceclasses" "${main_manifest}"
 
   step "Advertised IP"
   check_contains "daemon reads ${ADVERTISED_IP_LABEL}" "${ADVERTISED_IP_LABEL}" "${main_manifest}"

@@ -49,43 +49,68 @@ for resource in deviceclasses resourceclaims resourceclaimtemplates resourceslic
   fi
 done
 
-# A server dry run is the only reliable way to tell whether the API server keeps
-# consumable capacity requests: without DRAConsumableCapacity it silently drops
-# the capacity field instead of rejecting the object. The gate is beta and on by
-# default from Kubernetes 1.36, so this should only fail on 1.34-1.35.
+# Consumable capacity is only needed when the operator is configured to
+# oversubscribe GPUs (operator.sharesPerGPU > 1). With the default of one
+# exclusive claim per GPU the driver runs on plain, GA DRA.
 capacity_probe="$(cat <<YAML
 apiVersion: resource.k8s.io/v1
-kind: ResourceClaimTemplate
+kind: ResourceSlice
 metadata:
   name: thunder-preflight-capacity-probe
-  namespace: default
 spec:
-  spec:
-    devices:
-      requests:
-        - name: gpu
-          exactly:
-            deviceClassName: ${DEVICE_CLASS_NAME}
-            allocationMode: ExactCount
-            count: 1
-            capacity:
-              requests:
-                ${GPU_COUNT_CAPACITY}: "1"
+  driver: ${DRIVER_NAME}
+  pool:
+    name: preflight/probe
+    generation: 1
+    resourceSliceCount: 1
+  allNodes: true
+  devices:
+    - name: probe
+      allowMultipleAllocations: true
+      capacity:
+        ${SHARES_CAPACITY}:
+          value: "2"
 YAML
 )"
 
 if probe_output="$(printf '%s' "${capacity_probe}" | kube apply --dry-run=server -o json -f - 2>&1)"; then
   kept="$(printf '%s' "${probe_output}" | jq -r \
-    --arg key "${GPU_COUNT_CAPACITY}" \
-    '.spec.spec.devices.requests[0].exactly.capacity.requests[$key] // ""')"
-  if [[ "${kept}" == "1" ]]; then
-    check_pass "DRAConsumableCapacity preserves capacity requests"
+    --arg key "${SHARES_CAPACITY}" '.spec.devices[0].capacity[$key].value // ""')"
+  if [[ "${kept}" == "2" ]]; then
+    check_pass "DRAConsumableCapacity available (GPU oversubscription supported)"
   else
-    check_fail "DRAConsumableCapacity preserves capacity requests" \
-      "the API server dropped ${GPU_COUNT_CAPACITY}. DRAConsumableCapacity is on by default from Kubernetes 1.36; on 1.34-1.35 set feature-gates=DRAConsumableCapacity=true on the API server, scheduler, controller-manager and kubelet"
+    warn "DRAConsumableCapacity is off: operator.sharesPerGPU must stay at 1"
+    log "    it is beta and on by default from Kubernetes 1.36"
   fi
 else
-  check_fail "DRAConsumableCapacity preserves capacity requests" "${probe_output}"
+  warn "could not probe DRAConsumableCapacity: ${probe_output}"
+fi
+
+# The extended resource form (resources.limits: thundercompute.com/gpu) needs
+# DRAExtendedResource, which is beta and on by default from 1.36.
+extended_probe="$(cat <<YAML
+apiVersion: resource.k8s.io/v1
+kind: DeviceClass
+metadata:
+  name: thunder-preflight-extended-probe
+spec:
+  extendedResourceName: ${THUNDER_DOMAIN}/gpu
+  selectors:
+    - cel:
+        expression: device.driver == "${DRIVER_NAME}"
+YAML
+)"
+
+if probe_output="$(printf '%s' "${extended_probe}" | kube apply --dry-run=server -o json -f - 2>&1)"; then
+  kept="$(printf '%s' "${probe_output}" | jq -r '.spec.extendedResourceName // ""')"
+  if [[ "${kept}" == "${THUNDER_DOMAIN}/gpu" ]]; then
+    check_pass "DRAExtendedResource available (resources.limits form supported)"
+  else
+    warn "DRAExtendedResource is off: workloads must use a ResourceClaim"
+    log "    it is beta and on by default from Kubernetes 1.36"
+  fi
+else
+  warn "could not probe DRAExtendedResource: ${probe_output}"
 fi
 
 step "Thunder nodes"

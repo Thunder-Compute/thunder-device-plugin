@@ -31,7 +31,6 @@ const (
 
 	GPUTypeAttributeName = thunderDomain + "/gpu_type"
 	ZoneAttributeName    = thunderDomain + "/zone"
-	GPUCountCapacityName = thunderDomain + "/gpu_count"
 
 	claimUIDLabelName       = thunderDomain + "/claim-uid"
 	claimNameLabelName      = thunderDomain + "/claim-name"
@@ -46,6 +45,11 @@ type Allocation struct {
 	ClaimNamespace string
 	ClaimName      string
 
+	// Devices holds every device the claim was allocated from this driver.
+	// The operator publishes one device per GPU, so a multi-GPU claim has one
+	// entry per GPU and GPUCount is simply how many there are.
+	Devices []AllocatedDevice
+
 	RequestName string
 	PoolName    string
 	DeviceName  string
@@ -56,6 +60,14 @@ type Allocation struct {
 	Zone     string
 	GPUType  string
 	GPUCount int64
+}
+
+// AllocatedDevice is one GPU the scheduler assigned to a claim.
+type AllocatedDevice struct {
+	RequestName string
+	PoolName    string
+	DeviceName  string
+	ShareID     *types.UID
 }
 
 type ResourceConsumer struct {
@@ -255,48 +267,60 @@ func (d *Driver) decodeAllocation(ctx context.Context, claim *resourcev1.Resourc
 	}
 
 	driverName := d.driverName()
-	for _, allocation := range claim.Status.Allocation.Devices.Results {
-		if allocation.Driver != driverName {
+	allocation := Allocation{
+		ClaimUID:       claim.UID,
+		ClaimNamespace: claim.Namespace,
+		ClaimName:      claim.Name,
+		Consumer:       firstConsumer(claim),
+		NodeName:       d.NodeName,
+	}
+
+	for _, result := range claim.Status.Allocation.Devices.Results {
+		if result.Driver != driverName {
 			continue
 		}
 
-		device, err := d.allocatedDevice(ctx, allocation.Pool, allocation.Device)
+		device, err := d.allocatedDevice(ctx, result.Pool, result.Device)
 		if err != nil {
 			return Allocation{}, err
 		}
-
 		zone := stringAttribute(device, ZoneAttributeName)
 		gpuType := stringAttribute(device, GPUTypeAttributeName)
 		if zone == "" || gpuType == "" {
-			return Allocation{}, fmt.Errorf("allocated device %s/%s is missing Thunder zone or gpu type attributes", allocation.Pool, allocation.Device)
+			return Allocation{}, fmt.Errorf("allocated device %s/%s is missing Thunder zone or gpu type attributes", result.Pool, result.Device)
 		}
+		// Every device in one claim comes from a single zone and GPU type: the
+		// pool is keyed on both, and a request resolves within one pool.
+		if allocation.Zone != "" && (allocation.Zone != zone || allocation.GPUType != gpuType) {
+			return Allocation{}, fmt.Errorf("claim mixes Thunder pools: %s/%s and %s/%s",
+				allocation.Zone, allocation.GPUType, zone, gpuType)
+		}
+		allocation.Zone = zone
+		allocation.GPUType = gpuType
 
-		gpuCount := int64(1)
-		if allocation.ConsumedCapacity != nil {
-			if quantity, ok := allocation.ConsumedCapacity[resourcev1.QualifiedName(GPUCountCapacityName)]; ok {
-				gpuCount = quantity.Value()
-			}
-		}
-		if gpuCount <= 0 {
-			gpuCount = 1
-		}
-
-		return Allocation{
-			ClaimUID:       claim.UID,
-			ClaimNamespace: claim.Namespace,
-			ClaimName:      claim.Name,
-			RequestName:    allocation.Request,
-			PoolName:       allocation.Pool,
-			DeviceName:     allocation.Device,
-			ShareID:        allocation.ShareID,
-			Consumer:       firstConsumer(claim),
-			NodeName:       d.NodeName,
-			Zone:           zone,
-			GPUType:        gpuType,
-			GPUCount:       gpuCount,
-		}, nil
+		allocation.Devices = append(allocation.Devices, AllocatedDevice{
+			RequestName: result.Request,
+			PoolName:    result.Pool,
+			DeviceName:  result.Device,
+			ShareID:     result.ShareID,
+		})
 	}
-	return Allocation{}, fmt.Errorf("claim has no allocation result for driver %s", driverName)
+
+	if len(allocation.Devices) == 0 {
+		return Allocation{}, fmt.Errorf("claim has no allocation result for driver %s", driverName)
+	}
+
+	// One GPU per allocated device.
+	allocation.GPUCount = int64(len(allocation.Devices))
+
+	// The first device names the claim in the ThunderClient status and in
+	// logs; the CDI device itself is per claim, not per GPU.
+	first := allocation.Devices[0]
+	allocation.RequestName = first.RequestName
+	allocation.PoolName = first.PoolName
+	allocation.DeviceName = first.DeviceName
+	allocation.ShareID = first.ShareID
+	return allocation, nil
 }
 
 func (d *Driver) allocatedDevice(ctx context.Context, poolName, deviceName string) (*resourcev1.Device, error) {
@@ -359,16 +383,21 @@ func (d *Driver) driverName() string {
 	return strings.TrimSpace(d.DriverName)
 }
 
+// devicesFor reports one entry per allocated GPU. They all reference the same
+// CDI device because a claim maps to a single Thunder client, however many GPUs
+// that client was enrolled with.
 func devicesFor(cdiName string, allocation Allocation) []kubeletplugin.Device {
-	return []kubeletplugin.Device{
-		{
-			Requests:     []string{allocation.RequestName},
-			PoolName:     allocation.PoolName,
-			DeviceName:   allocation.DeviceName,
-			ShareID:      allocation.ShareID,
+	devices := make([]kubeletplugin.Device, 0, len(allocation.Devices))
+	for _, device := range allocation.Devices {
+		devices = append(devices, kubeletplugin.Device{
+			Requests:     []string{device.RequestName},
+			PoolName:     device.PoolName,
+			DeviceName:   device.DeviceName,
+			ShareID:      device.ShareID,
 			CDIDeviceIDs: []string{cdiName},
-		},
+		})
 	}
+	return devices
 }
 
 func firstConsumer(claim *resourcev1.ResourceClaim) ResourceConsumer {

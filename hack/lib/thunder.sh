@@ -15,7 +15,7 @@ CHART_TEST_VM="${REPO_ROOT}/charts/tests/vm"
 THUNDER_DOMAIN="thundercompute.com"
 DRIVER_NAME="${DRIVER_NAME:-${THUNDER_DOMAIN}}"
 DEVICE_CLASS_NAME="${DEVICE_CLASS_NAME:-thunder-gpu}"
-GPU_COUNT_CAPACITY="${THUNDER_DOMAIN}/gpu_count"
+SHARES_CAPACITY="${THUNDER_DOMAIN}/shares"
 GPU_TYPE_ATTRIBUTE="gpu_type"
 GPU_TYPE_ATTRIBUTE_KEY="${THUNDER_DOMAIN}/${GPU_TYPE_ATTRIBUTE}"
 ADVERTISED_IP_LABEL="${THUNDER_DOMAIN}/advertised-ip"
@@ -63,6 +63,20 @@ claim_is_allocated() {
   [[ -n "$(claim_field "$1" "$2" '{.status.allocation}')" ]]
 }
 
+# allocated_claim_with_prefix <namespace> <name-prefix> prints the first
+# allocated claim whose name starts with the prefix. The scheduler names the
+# claims it generates for extended resources after the pod and gives them no
+# labels, so they can only be found by name.
+allocated_claim_with_prefix() {
+  kube -n "$1" get resourceclaims -o json 2>/dev/null | jq -r --arg p "$2" \
+    '[.items[] | select(.metadata.name | startswith($p)) | select(.status.allocation != null)][0].metadata.name // ""'
+}
+
+# claim_with_prefix_is_allocated <namespace> <name-prefix>
+claim_with_prefix_is_allocated() {
+  [[ -n "$(allocated_claim_with_prefix "$1" "$2")" ]]
+}
+
 # claim_exists_for_label <namespace> <label-selector>
 claim_exists_for_label() {
   [[ -n "$(claim_by_label "$1" "$2")" ]]
@@ -71,6 +85,12 @@ claim_exists_for_label() {
 # pod_is_running <namespace> <name>
 pod_is_running() {
   [[ "$(kube -n "$1" get pod "$2" -o jsonpath='{.status.phase}' 2>/dev/null)" == "Running" ]]
+}
+
+# device_is_shareable <slice> is true once the slice's devices accept multiple
+# allocations, which only happens when oversubscription is configured.
+device_is_shareable() {
+  [[ "$(kube get resourceslice "$1" -o jsonpath='{.spec.devices[0].allowMultipleAllocations}' 2>/dev/null)" == "true" ]]
 }
 
 # vmi_is_running <namespace> <name>
@@ -121,6 +141,16 @@ slice_for_gpu_type() {
       .items[]
       | select(any(.spec.devices[]?.attributes[$attr]?.string // ""; ascii_downcase == ($want | ascii_downcase)))
       | .metadata.name' | head -1
+}
+
+# slice_exists_for_gpu_type <gpu-type>
+slice_exists_for_gpu_type() {
+  [[ -n "$(slice_for_gpu_type "$1")" ]]
+}
+
+# slice_gone_for_gpu_type <gpu-type>
+slice_gone_for_gpu_type() {
+  [[ -z "$(slice_for_gpu_type "$1")" ]]
 }
 
 # thunder_nodes prints the nodes the DaemonSet targets.

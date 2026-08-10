@@ -42,8 +42,12 @@ spec:
               value: {{ .Values.node.zoneLabel | quote }}
             - name: RECONCILE_INTERVAL
               value: {{ .Values.operator.reconcileInterval | quote }}
-            - name: VALID_GPU_COUNTS
-              value: {{ join "," .Values.operator.validGPUCounts | quote }}
+            - name: SHARES_PER_GPU
+              value: {{ .Values.operator.sharesPerGPU | quote }}
+            - name: DEVICE_CLASS_PREFIX
+              value: {{ .Values.operator.deviceClassPrefix | quote }}
+            - name: EXTENDED_RESOURCE_PREFIX
+              value: {{ .Values.operator.extendedResourcePrefix | quote }}
             - name: THUNDER_API_TOKEN
               valueFrom:
                 secretKeyRef:
