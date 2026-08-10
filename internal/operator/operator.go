@@ -203,8 +203,8 @@ func definitionFromResourceSlice(slice *resourcev1.ResourceSlice) poolDefinition
 	return poolDefinition{
 		Zone:           key.Zone,
 		GPUType:        key.GPUType,
-		HostCapacity:   parseIntLabel(slice.Labels["vgpu.thundercompute.com/host-capacity"]),
-		ClientCapacity: parseIntLabel(slice.Labels["vgpu.thundercompute.com/client-capacity"]),
+		HostCapacity:   parseIntLabel(slice.Labels[hostCapacityLabelName]),
+		ClientCapacity: parseIntLabel(slice.Labels[clientCapacityLabelName]),
 		Capacity:       capacity,
 	}
 }

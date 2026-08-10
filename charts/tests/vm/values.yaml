@@ -1,13 +1,13 @@
-driverName: vgpu.thundercompute.com
-deviceClassName: thunder-vgpu
+driverName: thundercompute.com
+deviceClassName: thunder-gpu
 
 gpu:
   type: A6000
   count: "1"
-  name: thunder-vgpu0
+  name: thunder-gpu0
 
 requestName: gpu
-claimName: vgpu
+claimName: gpu
 
 running: true
 

@@ -12,8 +12,9 @@ import (
 	"strings"
 	"syscall"
 
-	"thunder-device-plugin/internal/operator"
-	thunder "thunder-device-plugin/pkg/thunder-sdk"
+	"github.com/Thunder-Compute/thunder-device-plugin/internal/operator"
+	"github.com/Thunder-Compute/thunder-device-plugin/internal/version"
+	thunder "github.com/Thunder-Compute/thunder-sdk"
 
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -26,6 +27,7 @@ func main() {
 	flag.Parse()
 
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{}))
+	logger.Info("starting thunder-dra-operator", "version", version.Get(), "revision", version.Revision())
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -64,7 +66,8 @@ func thunderClientFromEnv() (*thunder.Client, error) {
 	if apiToken == "" {
 		return nil, fmt.Errorf("THUNDER_API_TOKEN is required")
 	}
-	return thunder.NewClient(os.Getenv("THUNDER_API_URL"), apiToken), nil
+	return thunder.NewClient(os.Getenv("THUNDER_API_URL"), apiToken,
+		thunder.WithUserAgent(version.UserAgent("operator"))), nil
 }
 
 func kubernetesConfig(kubeconfig string) (*rest.Config, error) {

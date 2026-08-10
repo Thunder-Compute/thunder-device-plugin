@@ -1,8 +1,9 @@
-module thunder-device-plugin
+module github.com/Thunder-Compute/thunder-device-plugin
 
 go 1.25.0
 
 require (
+	github.com/Thunder-Compute/thunder-sdk v0.1.0
 	k8s.io/api v0.35.0
 	k8s.io/apimachinery v0.35.0
 	k8s.io/client-go v0.35.0

@@ -1,12 +1,12 @@
-driverName: vgpu.thundercompute.com
-deviceClassName: thunder-vgpu
+driverName: thundercompute.com
+deviceClassName: thunder-gpu
 
 gpu:
   type: A6000
   count: "1"
 
 requestName: gpu
-claimName: vgpu
+claimName: gpu
 
 image:
   repository: ubuntu
@@ -32,7 +32,7 @@ command:
 args:
   - |
     set -eux
-    echo "Thunder vGPU DRA pod started"
+    echo "Thunder GPU DRA pod started"
     echo "PATH=${PATH:-}"
     echo "LD_LIBRARY_PATH=${LD_LIBRARY_PATH:-}"
     echo "THUNDER_RESOURCE_CLAIM_UID=${THUNDER_RESOURCE_CLAIM_UID:-}"

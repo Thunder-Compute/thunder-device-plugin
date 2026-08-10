@@ -7,7 +7,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	"thunder-device-plugin/internal/daemon"
+	"github.com/Thunder-Compute/thunder-device-plugin/internal/daemon"
 )
 
 func main() {

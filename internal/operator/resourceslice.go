@@ -5,6 +5,8 @@ import (
 	"encoding/hex"
 	"fmt"
 	"regexp"
+	"sort"
+	"strconv"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
@@ -13,12 +15,24 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+// thunderDomain qualifies every attribute, capacity and label the operator
+// publishes.
+const thunderDomain = "thundercompute.com"
+
 const (
 	resourceInventoryComponent = "resource-inventory"
 	driverAppName              = "thunder-dra-driver"
-	zoneAttributeName          = "vgpu.thundercompute.com/zone"
-	gpuTypeAttributeName       = "vgpu.thundercompute.com/gpu_type"
-	gpuCountCapacityName       = "vgpu.thundercompute.com/gpu_count"
+
+	zoneAttributeName    = thunderDomain + "/zone"
+	gpuTypeAttributeName = thunderDomain + "/gpu_type"
+	gpuCountCapacityName = thunderDomain + "/gpu_count"
+
+	// Labels recording the inputs that produced a slice, so a later reconcile
+	// can compare against them without re-querying Thunder.
+	zoneLabelName           = thunderDomain + "/zone"
+	gpuTypeLabelName        = thunderDomain + "/gpu_type"
+	hostCapacityLabelName   = thunderDomain + "/host-capacity"
+	clientCapacityLabelName = thunderDomain + "/client-capacity"
 )
 
 var invalidDNSLabelRun = regexp.MustCompile(`[^a-z0-9-]+`)
@@ -29,11 +43,7 @@ func buildResourceSlice(cfg Config, definition poolDefinition, generation int64)
 	zone := definition.Zone
 	gpuType := strings.ToUpper(definition.GPUType)
 	allowMultipleAllocations := true
-	defaultGPUCount := apiresource.MustParse("1")
-	validValues := make([]apiresource.Quantity, 0, len(cfg.ValidGPUCounts))
-	for _, value := range cfg.ValidGPUCounts {
-		validValues = append(validValues, apiresource.MustParse(value))
-	}
+	requestPolicy := capacityRequestPolicy(cfg.ValidGPUCounts, definition.Capacity)
 
 	return &resourcev1.ResourceSlice{
 		TypeMeta: metav1.TypeMeta{
@@ -43,13 +53,13 @@ func buildResourceSlice(cfg Config, definition poolDefinition, generation int64)
 		ObjectMeta: metav1.ObjectMeta{
 			Name: resourceSliceName(cfg.NamePrefix, definition.Zone, definition.GPUType),
 			Labels: map[string]string{
-				"app.kubernetes.io/name":                  driverAppName,
-				"app.kubernetes.io/component":             resourceInventoryComponent,
-				"app.kubernetes.io/managed-by":            "thunder-dra-operator",
-				"vgpu.thundercompute.com/zone":            zoneLabel,
-				"vgpu.thundercompute.com/gpu_type":        gpuLabel,
-				"vgpu.thundercompute.com/host-capacity":   fmt.Sprint(definition.HostCapacity),
-				"vgpu.thundercompute.com/client-capacity": fmt.Sprint(definition.ClientCapacity),
+				"app.kubernetes.io/name":       driverAppName,
+				"app.kubernetes.io/component":  resourceInventoryComponent,
+				"app.kubernetes.io/managed-by": "thunder-dra-operator",
+				zoneLabelName:                  zoneLabel,
+				gpuTypeLabelName:               gpuLabel,
+				hostCapacityLabelName:          fmt.Sprint(definition.HostCapacity),
+				clientCapacityLabelName:        fmt.Sprint(definition.ClientCapacity),
 			},
 		},
 		Spec: resourcev1.ResourceSliceSpec{
@@ -86,16 +96,46 @@ func buildResourceSlice(cfg Config, definition poolDefinition, generation int64)
 					},
 					Capacity: map[resourcev1.QualifiedName]resourcev1.DeviceCapacity{
 						resourcev1.QualifiedName(gpuCountCapacityName): {
-							Value: apiresource.MustParse(fmt.Sprint(definition.Capacity)),
-							RequestPolicy: &resourcev1.CapacityRequestPolicy{
-								Default:     quantityPtr(defaultGPUCount),
-								ValidValues: validValues,
-							},
+							Value:         apiresource.MustParse(fmt.Sprint(definition.Capacity)),
+							RequestPolicy: requestPolicy,
 						},
 					},
 				},
 			},
 		},
+	}
+}
+
+// capacityRequestPolicy builds the request policy for a device's GPU count.
+//
+// The API server rejects a slice whose validValues contain an option larger
+// than the device capacity, and rejects a default that is not itself a valid
+// value. A zone can easily hold fewer GPUs than the largest configured count,
+// so the configured options are clamped to what the zone can actually serve
+// and the default is the smallest surviving option. When nothing survives the
+// device is published without a request policy rather than not at all.
+func capacityRequestPolicy(validGPUCounts []string, capacity int64) *resourcev1.CapacityRequestPolicy {
+	validValues := make([]apiresource.Quantity, 0, len(validGPUCounts))
+	smallest := int64(0)
+	for _, value := range validGPUCounts {
+		count, err := strconv.ParseInt(value, 10, 64)
+		if err != nil || count <= 0 || count > capacity {
+			continue
+		}
+		validValues = append(validValues, apiresource.MustParse(value))
+		if smallest == 0 || count < smallest {
+			smallest = count
+		}
+	}
+	if len(validValues) == 0 {
+		return nil
+	}
+	sort.Slice(validValues, func(i, j int) bool {
+		return validValues[i].Cmp(validValues[j]) < 0
+	})
+	return &resourcev1.CapacityRequestPolicy{
+		Default:     quantityPtr(apiresource.MustParse(fmt.Sprint(smallest))),
+		ValidValues: validValues,
 	}
 }
 

@@ -18,17 +18,25 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/dynamic-resource-allocation/kubeletplugin"
 
-	thunder "thunder-device-plugin/pkg/thunder-sdk"
+	thunder "github.com/Thunder-Compute/thunder-sdk"
 )
 
-const (
-	DefaultDriverName             = "vgpu.thundercompute.com"
-	DefaultThunderClientNamespace = "thunder-system"
-	DefaultCDIKind                = "vgpu.thundercompute.com/vgpu"
+// thunderDomain qualifies every resource, attribute and label the driver owns.
+const thunderDomain = "thundercompute.com"
 
-	GPUTypeAttributeName = "vgpu.thundercompute.com/gpu_type"
-	ZoneAttributeName    = "vgpu.thundercompute.com/zone"
-	GPUCountCapacityName = "vgpu.thundercompute.com/gpu_count"
+const (
+	DefaultDriverName             = thunderDomain
+	DefaultThunderClientNamespace = "thunder-system"
+	DefaultCDIKind                = thunderDomain + "/gpu"
+
+	GPUTypeAttributeName = thunderDomain + "/gpu_type"
+	ZoneAttributeName    = thunderDomain + "/zone"
+	GPUCountCapacityName = thunderDomain + "/gpu_count"
+
+	claimUIDLabelName       = thunderDomain + "/claim-uid"
+	claimNameLabelName      = thunderDomain + "/claim-name"
+	claimNamespaceLabelName = thunderDomain + "/claim-namespace"
+	gpuTypeLabelName        = thunderDomain + "/gpu-type"
 )
 
 var ErrNotFound = errors.New("not found")
@@ -425,7 +433,7 @@ func IsNotFoundError(err error) bool {
 	return errors.Is(err, ErrNotFound) || apierrors.IsNotFound(err)
 }
 
-// ThunderTokenIssuer adapts pkg/thunder-sdk to the daemon DRA plugin.
+// ThunderTokenIssuer adapts the Thunder SDK to the daemon DRA plugin.
 type ThunderTokenIssuer struct {
 	Client *thunder.Client
 	ZoneID string

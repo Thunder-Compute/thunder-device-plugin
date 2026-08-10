@@ -49,7 +49,7 @@ func TestPrepareResourceClaimsMintsTokenCreatesClientAndReturnsCDI(t *testing.T)
 	if device.PoolName != "us-west-2a/a6000" || device.DeviceName != "a6000-capacity" {
 		t.Fatalf("device = %#v", device)
 	}
-	if len(device.CDIDeviceIDs) != 1 || device.CDIDeviceIDs[0] != "vgpu.thundercompute.com/vgpu=claim-11111111-1111-1111-1111-111111111111" {
+	if len(device.CDIDeviceIDs) != 1 || device.CDIDeviceIDs[0] != "thundercompute.com/gpu=claim-11111111-1111-1111-1111-111111111111" {
 		t.Fatalf("CDI IDs = %#v", device.CDIDeviceIDs)
 	}
 	if tokens.minted != 1 {
@@ -110,7 +110,7 @@ func TestUnprepareResourceClaimsRevokesTokenAndDeletesClient(t *testing.T) {
 		ClaimNamespace:    "default",
 		ClaimName:         "claim-a",
 		EnrollmentTokenID: "token-id-1",
-		CDIName:           "vgpu.thundercompute.com/vgpu=claim-11111111-1111-1111-1111-111111111111",
+		CDIName:           "thundercompute.com/gpu=claim-11111111-1111-1111-1111-111111111111",
 		GuestNamespace:    "default",
 		GuestConfigMap:    "claim-a-thunder-configmap",
 		GuestSecret:       "claim-a-thunder-secret",
@@ -118,7 +118,7 @@ func TestUnprepareResourceClaimsRevokesTokenAndDeletesClient(t *testing.T) {
 		t.Fatal(err)
 	}
 	tokens := &fakeTokenIssuer{}
-	cdi := &memoryCDIStore{created: map[string]bool{"vgpu.thundercompute.com/vgpu=claim-11111111-1111-1111-1111-111111111111": true}}
+	cdi := &memoryCDIStore{created: map[string]bool{"thundercompute.com/gpu=claim-11111111-1111-1111-1111-111111111111": true}}
 	guest := &memoryGuestStore{created: map[string]bool{"default/claim-a-thunder-configmap": true, "default/claim-a-thunder-secret": true}}
 	driver := &Driver{Tokens: tokens, Clients: clients, CDI: cdi, Guest: guest}
 
@@ -135,7 +135,7 @@ func TestUnprepareResourceClaimsRevokesTokenAndDeletesClient(t *testing.T) {
 	if _, err := clients.Get(ctx, claimUID); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("ThunderClient get error = %v, want ErrNotFound", err)
 	}
-	if cdi.created["vgpu.thundercompute.com/vgpu=claim-11111111-1111-1111-1111-111111111111"] {
+	if cdi.created["thundercompute.com/gpu=claim-11111111-1111-1111-1111-111111111111"] {
 		t.Fatalf("CDI device still exists")
 	}
 	if guest.created["default/claim-a-thunder-configmap"] || guest.created["default/claim-a-thunder-secret"] {

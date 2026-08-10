@@ -9,7 +9,7 @@ import (
 )
 
 const (
-	DefaultDriverName    = "vgpu.thundercompute.com"
+	DefaultDriverName    = "thundercompute.com"
 	DefaultNamePrefix    = "thunder"
 	DefaultZoneLabelKey  = "topology.kubernetes.io/zone"
 	DefaultValidGPUCount = "1,2,4,8"

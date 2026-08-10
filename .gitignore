@@ -1,5 +1,25 @@
-cli/
-*.md
-!README.md
+# Build output
+bin/
+dist/
 .build/
+
+# Go
+*.test
+*.out
+coverage.*
+
+# Helm
+*.tgz
+charts/**/charts/
+
+# Editor and OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Local development
+cli/
 scripts/
+kubeconfig
+*.local.yaml

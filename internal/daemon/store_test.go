@@ -30,7 +30,7 @@ func TestFileCDIDeviceStoreCreateWritesMountsEnvAndHook(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	if qualifiedName != "vgpu.thundercompute.com/vgpu=claim-11111111-1111-1111-1111-111111111111" {
+	if qualifiedName != "thundercompute.com/gpu=claim-11111111-1111-1111-1111-111111111111" {
 		t.Fatalf("qualifiedName = %q", qualifiedName)
 	}
 

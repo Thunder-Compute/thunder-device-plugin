@@ -10,7 +10,7 @@ import (
 const (
 	EnvNode                = "NODE"
 	EnvZone                = "ZONE"
-	EnvExternalIP          = "EXTERNAL_IP"
+	EnvAdvertisedIP        = "ADVERTISED_IP"
 	EnvMinNVDriverVersion  = "MIN_DRIVER_VERSION"
 	EnvThunderAPIURL       = "THUNDER_API_URL"
 	EnvThunderAPIToken     = "THUNDER_API_TOKEN"
@@ -19,7 +19,7 @@ const (
 	EnvLibNVMLPath         = "LIBNVIDIA_ML_PATH"
 	EnvNVSMIPath           = "NVIDIA_SMI_PATH"
 	EnvZoneLabel           = "NODE_ZONE_LABEL"
-	EnvExternalIPLabel     = "NODE_EXTERNAL_IP_LABEL"
+	EnvAdvertisedIPLabel   = "NODE_ADVERTISED_IP_LABEL"
 	EnvHostTargetPID       = "HOST_TARGET_PID"
 	EnvDRAEnabled          = "DRA_ENABLED"
 	EnvDRADriverName       = "DRA_DRIVER_NAME"
@@ -35,7 +35,7 @@ const (
 	DefaultLibNVMLPath         = "/usr/lib/x86_64-linux-gnu/libnvidia-ml.so.1"
 	DefaultNVSMIPath           = "/usr/bin/nvidia-smi"
 	DefaultZoneLabel           = "topology.kubernetes.io/zone"
-	DefaultExternalIPLabel     = "thundercompute.com/external-ip"
+	DefaultAdvertisedIPLabel   = "thundercompute.com/advertised-ip"
 	DefaultHostTargetPID       = "1"
 	DefaultDRAEnabled          = true
 	DefaultDRADriverName       = DefaultDriverName
@@ -46,9 +46,12 @@ const (
 )
 
 type Config struct {
-	Node                string
-	Zone                string
-	ExternalIP          string
+	Node string
+	Zone string
+	// AdvertisedIP is the address Thunder clients use to reach this node.
+	// When empty it is resolved from AdvertisedIPLabel and then from the
+	// node's own IP. See resolveNodeAttributes.
+	AdvertisedIP        string
 	MinDriverVersion    string
 	ThunderAPIURL       string
 	ThunderAPIToken     string
@@ -57,7 +60,7 @@ type Config struct {
 	LibNVMLPath         string
 	NVSMIPath           string
 	ZoneLabel           string
-	ExternalIPLabel     string
+	AdvertisedIPLabel   string
 	HostTargetPID       string
 	DRAEnabled          bool
 	DRADriverName       string
@@ -77,7 +80,7 @@ func configFromLookup(lookup func(string) (string, bool)) (Config, error) {
 		return Config{}, err
 	}
 	zone := optionalEnv(lookup, EnvZone, "")
-	externalIP := optionalEnv(lookup, EnvExternalIP, "")
+	advertisedIP := optionalEnv(lookup, EnvAdvertisedIP, "")
 	minVersion, err := requiredEnv(lookup, EnvMinNVDriverVersion)
 	if err != nil {
 		return Config{}, err
@@ -94,7 +97,7 @@ func configFromLookup(lookup func(string) (string, bool)) (Config, error) {
 	return Config{
 		Node:                node,
 		Zone:                zone,
-		ExternalIP:          externalIP,
+		AdvertisedIP:        advertisedIP,
 		MinDriverVersion:    minVersion,
 		ThunderAPIURL:       optionalEnv(lookup, EnvThunderAPIURL, ""),
 		ThunderAPIToken:     apiToken,
@@ -103,7 +106,7 @@ func configFromLookup(lookup func(string) (string, bool)) (Config, error) {
 		LibNVMLPath:         optionalEnv(lookup, EnvLibNVMLPath, DefaultLibNVMLPath),
 		NVSMIPath:           optionalEnv(lookup, EnvNVSMIPath, DefaultNVSMIPath),
 		ZoneLabel:           optionalEnv(lookup, EnvZoneLabel, DefaultZoneLabel),
-		ExternalIPLabel:     optionalEnv(lookup, EnvExternalIPLabel, DefaultExternalIPLabel),
+		AdvertisedIPLabel:   optionalEnv(lookup, EnvAdvertisedIPLabel, DefaultAdvertisedIPLabel),
 		HostTargetPID:       optionalEnv(lookup, EnvHostTargetPID, DefaultHostTargetPID),
 		DRAEnabled:          draEnabled,
 		DRADriverName:       optionalEnv(lookup, EnvDRADriverName, DefaultDRADriverName),

@@ -6,13 +6,13 @@ import (
 	"sort"
 	"strings"
 
-	thunder "thunder-device-plugin/pkg/thunder-sdk"
+	thunder "github.com/Thunder-Compute/thunder-sdk"
 )
 
 type InventorySource interface {
 	ListZones(ctx context.Context) ([]thunder.Zone, error)
-	ListNodes(ctx context.Context, zoneID string) ([]thunder.Node, error)
-	ListClients(ctx context.Context, zoneID string) ([]thunder.ClientNode, error)
+	ListServers(ctx context.Context, zoneID string) ([]thunder.Server, error)
+	ListClients(ctx context.Context, zoneID string) ([]thunder.RegisteredClient, error)
 }
 
 type poolKey struct {
@@ -49,7 +49,7 @@ func buildDesiredPools(ctx context.Context, inventory InventorySource) (map[pool
 		}
 
 		hostCounts := map[string]int64{}
-		nodes, err := inventory.ListNodes(ctx, zoneID)
+		nodes, err := inventory.ListServers(ctx, zoneID)
 		if err != nil {
 			return nil, fmt.Errorf("list thunder nodes in zone %q: %w", zoneID, err)
 		}

@@ -44,14 +44,14 @@ spec:
             - name: ZONE
               value: {{ . | quote }}
             {{- end }}
-            {{- with .Values.node.externalIP }}
-            - name: EXTERNAL_IP
+            {{- with .Values.node.advertisedIP }}
+            - name: ADVERTISED_IP
               value: {{ . | quote }}
             {{- end }}
             - name: NODE_ZONE_LABEL
               value: {{ .Values.node.zoneLabel | quote }}
-            - name: NODE_EXTERNAL_IP_LABEL
-              value: {{ .Values.node.externalIPLabel | quote }}
+            - name: NODE_ADVERTISED_IP_LABEL
+              value: {{ .Values.node.advertisedIPLabel | quote }}
             - name: MIN_DRIVER_VERSION
               value: {{ .Values.nvidia.minDriverVersion | quote }}
             - name: HOST_ROOT
@@ -126,8 +126,6 @@ spec:
             nodeSelectorTerms:
               - matchExpressions:
                   - key: {{ .Values.node.zoneLabel | quote }}
-                    operator: Exists
-                  - key: {{ .Values.node.externalIPLabel | quote }}
                     operator: Exists
                   - key: {{ .Values.nodeLabelKeys.thunderNode | quote }}
                     operator: In

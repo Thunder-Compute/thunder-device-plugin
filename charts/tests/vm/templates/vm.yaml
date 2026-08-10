@@ -1,9 +1,9 @@
 apiVersion: kubevirt.io/v1
 kind: VirtualMachine
 metadata:
-  name: {{ include "thunder-vgpu-test-vm.fullname" . | quote }}
+  name: {{ include "thunder-gpu-test-vm.fullname" . | quote }}
   labels:
-    {{- include "thunder-vgpu-test-vm.labels" . | nindent 4 }}
+    {{- include "thunder-gpu-test-vm.labels" . | nindent 4 }}
     {{- with .Values.vmLabels }}
     {{- toYaml . | nindent 4 }}
     {{- end }}
@@ -15,9 +15,9 @@ spec:
   running: {{ .Values.running }}
   dataVolumeTemplates:
     - metadata:
-        name: {{ include "thunder-vgpu-test-vm.rootDiskName" . | quote }}
+        name: {{ include "thunder-gpu-test-vm.rootDiskName" . | quote }}
         labels:
-          {{- include "thunder-vgpu-test-vm.labels" . | nindent 10 }}
+          {{- include "thunder-gpu-test-vm.labels" . | nindent 10 }}
       spec:
         source:
           http:
@@ -35,11 +35,11 @@ spec:
   template:
     metadata:
       labels:
-        {{- include "thunder-vgpu-test-vm.labels" . | nindent 8 }}
+        {{- include "thunder-gpu-test-vm.labels" . | nindent 8 }}
     spec:
       resourceClaims:
         - name: {{ .Values.claimName | quote }}
-          resourceClaimName: {{ include "thunder-vgpu-test-vm.claimName" . | quote }}
+          resourceClaimName: {{ include "thunder-gpu-test-vm.claimName" . | quote }}
       domain:
         resources:
           requests:
@@ -52,7 +52,7 @@ spec:
               claimName: {{ .Values.claimName | quote }}
               requestName: {{ .Values.requestName | quote }}
           disks:
-            - name: {{ include "thunder-vgpu-test-vm.rootDiskName" . | quote }}
+            - name: {{ include "thunder-gpu-test-vm.rootDiskName" . | quote }}
               disk:
                 bus: virtio
             - name: cloudinitdisk
@@ -74,19 +74,19 @@ spec:
           pod: {}
       {{- end }}
       volumes:
-        - name: {{ include "thunder-vgpu-test-vm.rootDiskName" . | quote }}
+        - name: {{ include "thunder-gpu-test-vm.rootDiskName" . | quote }}
           dataVolume:
-            name: {{ include "thunder-vgpu-test-vm.rootDiskName" . | quote }}
+            name: {{ include "thunder-gpu-test-vm.rootDiskName" . | quote }}
         - name: cloudinitdisk
           cloudInitNoCloud:
             userData: {{ .Values.cloudInit.userData | quote }}
         - name: thunder-config
           configMap:
-            name: {{ include "thunder-vgpu-test-vm.guestConfigMapName" . | quote }}
+            name: {{ include "thunder-gpu-test-vm.guestConfigMapName" . | quote }}
             optional: true
         - name: thunder-secret
           secret:
-            secretName: {{ include "thunder-vgpu-test-vm.guestSecretName" . | quote }}
+            secretName: {{ include "thunder-gpu-test-vm.guestSecretName" . | quote }}
             optional: true
       {{- with .Values.nodeSelector }}
       nodeSelector:

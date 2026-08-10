@@ -1,3 +1,11 @@
+# Override the chart name used for resource names, or the generated names
+# themselves. Leave empty for the defaults.
+nameOverride: ""
+fullnameOverride: ""
+
+# Pull secrets applied to both the daemon and the operator.
+imagePullSecrets: []
+
 namespace:
   create: true
   name: thunder-system
@@ -14,7 +22,7 @@ operator:
     repository: thundercompute/thunder-dra-operator
     tag: latest
     pullPolicy: IfNotPresent
-  driverName: vgpu.thundercompute.com
+  driverName: thundercompute.com
   resourceSliceNamePrefix: thunder
   reconcileInterval: 60s
   validGPUCounts:
@@ -40,15 +48,21 @@ thunder:
   apiURLKey: THUNDER_API_URL
 
 node:
-  # Kubernetes node name is injected from spec.nodeName. Zone and externalIP are
-  # optional env overrides; when empty, the daemon reads the current Node labels.
+  # The Kubernetes node name is injected from spec.nodeName.
+  #
+  # zone and advertisedIP are per-node overrides that apply to every node in the
+  # DaemonSet, so leave them empty unless the whole cluster shares one value.
+  # When empty the daemon resolves them per node:
+  #   zone         -> the zoneLabel label (required)
+  #   advertisedIP -> the advertisedIPLabel label, else the node's own IP
+  #                   (status.addresses InternalIP, then ExternalIP)
   zone: ""
-  externalIP: ""
+  advertisedIP: ""
   zoneLabel: topology.kubernetes.io/zone
-  externalIPLabel: thundercompute.com/external-ip
+  advertisedIPLabel: thundercompute.com/advertised-ip
 
 nvidia:
-  minDriverVersion: "535.104.05"
+  minDriverVersion: "610"
   libcudaPath: /usr/lib/x86_64-linux-gnu/libcuda.so.1
   libnvidiaMLPath: /usr/lib/x86_64-linux-gnu/libnvidia-ml.so.1
   nvidiaSMIPath: /usr/bin/nvidia-smi
@@ -58,14 +72,14 @@ hostTargetPID: "1"
 
 dra:
   enabled: true
-  driverName: vgpu.thundercompute.com
+  driverName: thundercompute.com
   thunderClientNamespace: thunder-system
-  kubeletPluginDir: /var/lib/kubelet/plugins/vgpu.thundercompute.com
+  kubeletPluginDir: /var/lib/kubelet/plugins/thundercompute.com
   kubeletRegistrarDir: /var/lib/kubelet/plugins_registry
 
 deviceClass:
   enabled: true
-  name: thunder-vgpu
+  name: thunder-gpu
 
 cdi:
   specDir: /var/run/cdi
@@ -75,15 +89,9 @@ nodeSelector:
   nvidia.com/gpu.present: "true"
 
 nodeLabelKeys:
-  externalIP: thundercompute.com/external-ip
+  # Label that marks a node as Thunder-eligible. The DaemonSet requires it in
+  # addition to nodeSelector above.
   thunderNode: thundercompute.com/node
-  thunderReady: thundercompute.com/node-ready
-  thunderGPUCount: thundercompute.com/gpu-count
-  thunderDriverVersion: thundercompute.com/gpu-driver-version
-  zone: topology.kubernetes.io/zone
-  nvidiaGPUPresent: nvidia.com/gpu.present
-  nvidiaGPUCount: nvidia.com/gpu.count
-  nvidiaGPUProduct: nvidia.com/gpu.product
 
 tolerations: []
 affinity: {}
@@ -92,3 +100,12 @@ podAnnotations: {}
 podLabels: {}
 
 resources: {}
+
+tests:
+  # Resources created by `helm test`. The image only needs kubectl on PATH.
+  enabled: true
+  image:
+    repository: registry.k8s.io/kubectl
+    tag: v1.34.0
+    pullPolicy: IfNotPresent
+  timeoutSeconds: 120

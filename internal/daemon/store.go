@@ -111,10 +111,10 @@ func thunderClientObject(client ThunderClient, namespace string) *unstructured.U
 			"name":      ThunderClientName(client.ClaimUID),
 			"namespace": namespace,
 			"labels": map[string]any{
-				"app.kubernetes.io/name":                  "thunder-dra-driver",
-				"vgpu.thundercompute.com/claim-uid":       string(client.ClaimUID),
-				"vgpu.thundercompute.com/gpu-type":        strings.ToLower(client.GPUType),
-				"vgpu.thundercompute.com/claim-namespace": client.ClaimNamespace,
+				"app.kubernetes.io/name": "thunder-dra-driver",
+				claimUIDLabelName:        string(client.ClaimUID),
+				gpuTypeLabelName:         strings.ToLower(client.GPUType),
+				claimNamespaceLabelName:  client.ClaimNamespace,
 			},
 		},
 		"spec": map[string]any{
@@ -326,11 +326,11 @@ func thunderGuestArtifactName(claimName string, suffix string) string {
 
 func guestArtifactLabels(allocation Allocation) map[string]string {
 	return map[string]string{
-		"app.kubernetes.io/name":                  "thunder-dra-driver",
-		"app.kubernetes.io/component":             "guest-config",
-		"vgpu.thundercompute.com/claim-uid":       string(allocation.ClaimUID),
-		"vgpu.thundercompute.com/claim-namespace": allocation.ClaimNamespace,
-		"vgpu.thundercompute.com/claim-name":      allocation.ClaimName,
+		"app.kubernetes.io/name":      "thunder-dra-driver",
+		"app.kubernetes.io/component": "guest-config",
+		claimUIDLabelName:             string(allocation.ClaimUID),
+		claimNamespaceLabelName:       allocation.ClaimNamespace,
+		claimNameLabelName:            allocation.ClaimName,
 	}
 }
 

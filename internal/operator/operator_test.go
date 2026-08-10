@@ -2,6 +2,7 @@ package operator
 
 import (
 	"context"
+	"reflect"
 	"testing"
 	"time"
 
@@ -9,25 +10,25 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/fake"
 
-	thunder "thunder-device-plugin/pkg/thunder-sdk"
+	thunder "github.com/Thunder-Compute/thunder-sdk"
 )
 
 type fakeInventory struct {
 	zones   []thunder.Zone
-	nodes   map[string][]thunder.Node
-	clients map[string][]thunder.ClientNode
+	nodes   map[string][]thunder.Server
+	clients map[string][]thunder.RegisteredClient
 }
 
 func (f *fakeInventory) ListZones(context.Context) ([]thunder.Zone, error) {
 	return append([]thunder.Zone(nil), f.zones...), nil
 }
 
-func (f *fakeInventory) ListNodes(_ context.Context, zoneID string) ([]thunder.Node, error) {
-	return append([]thunder.Node(nil), f.nodes[zoneID]...), nil
+func (f *fakeInventory) ListServers(_ context.Context, zoneID string) ([]thunder.Server, error) {
+	return append([]thunder.Server(nil), f.nodes[zoneID]...), nil
 }
 
-func (f *fakeInventory) ListClients(_ context.Context, zoneID string) ([]thunder.ClientNode, error) {
-	return append([]thunder.ClientNode(nil), f.clients[zoneID]...), nil
+func (f *fakeInventory) ListClients(_ context.Context, zoneID string) ([]thunder.RegisteredClient, error) {
+	return append([]thunder.RegisteredClient(nil), f.clients[zoneID]...), nil
 }
 
 func testConfig() Config {
@@ -43,13 +44,13 @@ func testConfig() Config {
 func TestBuildDesiredPoolsUsesMaxHostAndClientCapacity(t *testing.T) {
 	inventory := &fakeInventory{
 		zones: []thunder.Zone{{ZoneID: "zone-1", DisplayName: "us-west-2a"}},
-		nodes: map[string][]thunder.Node{
+		nodes: map[string][]thunder.Server{
 			"zone-1": {
 				{GPUType: "A6000", GPUCount: 10, Status: "active"},
 				{GPUType: "A6000", GPUCount: 99, Status: "offline"},
 			},
 		},
-		clients: map[string][]thunder.ClientNode{
+		clients: map[string][]thunder.RegisteredClient{
 			"zone-1": {
 				{GPUType: "a6000", GPUCount: 12},
 				{GPUType: "H100", GPUCount: 2},
@@ -76,10 +77,10 @@ func TestSyncCreatesUpdatesAndDeletesResourceSlices(t *testing.T) {
 	ctx := context.Background()
 	inventory := &fakeInventory{
 		zones: []thunder.Zone{{ZoneID: "zone-1", DisplayName: "us-west-2a"}},
-		nodes: map[string][]thunder.Node{
+		nodes: map[string][]thunder.Server{
 			"zone-1": {{GPUType: "A6000", GPUCount: 4, Status: "online"}},
 		},
-		clients: map[string][]thunder.ClientNode{},
+		clients: map[string][]thunder.RegisteredClient{},
 	}
 	kube := fake.NewSimpleClientset()
 	op := New(testConfig(), kube, inventory, nil)
@@ -95,7 +96,7 @@ func TestSyncCreatesUpdatesAndDeletesResourceSlices(t *testing.T) {
 		t.Fatalf("capacity = %d, want 4", got)
 	}
 
-	inventory.nodes["zone-1"] = []thunder.Node{{GPUType: "A6000", GPUCount: 6, Status: "online"}}
+	inventory.nodes["zone-1"] = []thunder.Server{{GPUType: "A6000", GPUCount: 6, Status: "online"}}
 	if err := op.Sync(ctx); err != nil {
 		t.Fatalf("second Sync returned error: %v", err)
 	}
@@ -150,4 +151,82 @@ func gpuCapacity(t *testing.T, slice *resourcev1.ResourceSlice) int64 {
 		t.Fatalf("gpu count capacity is missing")
 	}
 	return capacity.Value.Value()
+}
+
+func TestCapacityRequestPolicyClampsToCapacity(t *testing.T) {
+	// The API server rejects any valid value larger than the device capacity,
+	// and rejects a default that is not itself a valid value.
+	tests := []struct {
+		name        string
+		counts      []string
+		capacity    int64
+		wantValid   []string
+		wantDefault string
+		wantNil     bool
+	}{
+		{
+			name:        "all options fit",
+			counts:      []string{"1", "2", "4"},
+			capacity:    4,
+			wantValid:   []string{"1", "2", "4"},
+			wantDefault: "1",
+		},
+		{
+			name:        "drops options larger than capacity",
+			counts:      []string{"1", "2", "4", "8"},
+			capacity:    4,
+			wantValid:   []string{"1", "2", "4"},
+			wantDefault: "1",
+		},
+		{
+			name:        "default is the smallest surviving option",
+			counts:      []string{"2", "4", "8"},
+			capacity:    4,
+			wantValid:   []string{"2", "4"},
+			wantDefault: "2",
+		},
+		{
+			name:     "no option fits",
+			counts:   []string{"4", "8"},
+			capacity: 2,
+			wantNil:  true,
+		},
+		{
+			name:        "unsorted input is ordered",
+			counts:      []string{"4", "1", "2"},
+			capacity:    8,
+			wantValid:   []string{"1", "2", "4"},
+			wantDefault: "1",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			policy := capacityRequestPolicy(test.counts, test.capacity)
+			if test.wantNil {
+				if policy != nil {
+					t.Fatalf("policy = %#v, want nil", policy)
+				}
+				return
+			}
+			if policy == nil {
+				t.Fatal("policy = nil, want a policy")
+			}
+			got := make([]string, 0, len(policy.ValidValues))
+			for _, value := range policy.ValidValues {
+				got = append(got, value.String())
+			}
+			if !reflect.DeepEqual(got, test.wantValid) {
+				t.Fatalf("ValidValues = %v, want %v", got, test.wantValid)
+			}
+			if policy.Default == nil || policy.Default.String() != test.wantDefault {
+				t.Fatalf("Default = %v, want %s", policy.Default, test.wantDefault)
+			}
+			for _, value := range policy.ValidValues {
+				if value.Value() > test.capacity {
+					t.Fatalf("ValidValues contains %s, larger than capacity %d", value.String(), test.capacity)
+				}
+			}
+		})
+	}
 }

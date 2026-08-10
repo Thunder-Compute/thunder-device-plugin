@@ -1,9 +1,9 @@
 apiVersion: resource.k8s.io/v1
 kind: ResourceClaim
 metadata:
-  name: {{ include "thunder-vgpu-test-vm.claimName" . | quote }}
+  name: {{ include "thunder-gpu-test-vm.claimName" . | quote }}
   labels:
-    {{- include "thunder-vgpu-test-vm.labels" . | nindent 4 }}
+    {{- include "thunder-gpu-test-vm.labels" . | nindent 4 }}
 spec:
   devices:
     requests:

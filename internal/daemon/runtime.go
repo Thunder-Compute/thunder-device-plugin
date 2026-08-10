@@ -7,7 +7,9 @@ import (
 	"path/filepath"
 	"strings"
 
-	thunder "thunder-device-plugin/pkg/thunder-sdk"
+	thunder "github.com/Thunder-Compute/thunder-sdk"
+
+	"github.com/Thunder-Compute/thunder-device-plugin/internal/version"
 
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
@@ -15,18 +17,20 @@ import (
 )
 
 func Run(ctx context.Context, cfg Config) error {
-	return run(ctx, cfg, osCommandRunner{targetPID: cfg.HostTargetPID}, kubernetesNodeLabelReader{})
+	return run(ctx, cfg, osCommandRunner{targetPID: cfg.HostTargetPID}, kubernetesNodeInfoReader{})
 }
 
-func run(ctx context.Context, cfg Config, runner commandRunner, labels nodeLabelReader) error {
+func run(ctx context.Context, cfg Config, runner commandRunner, nodes nodeInfoReader) error {
 	var err error
-	cfg, err = resolveNodeAttributes(ctx, cfg, labels)
+	cfg, err = resolveNodeAttributes(ctx, cfg, nodes)
 	if err != nil {
 		return err
 	}
-	log.Printf("registering thunder daemon on kubernetes node %s in zone %s", cfg.Node, cfg.Zone)
+	log.Printf("starting thunder daemon %s (%s): node=%s zone=%s advertising=%s",
+		version.Get(), version.Revision(), cfg.Node, cfg.Zone, cfg.AdvertisedIP)
 
-	client := thunder.NewClient(cfg.ThunderAPIURL, cfg.ThunderAPIToken)
+	client := thunder.NewClient(cfg.ThunderAPIURL, cfg.ThunderAPIToken,
+		thunder.WithUserAgent(version.UserAgent("daemon")))
 	zoneID, err := ensureThunderZone(ctx, client, cfg.Zone)
 	if err != nil {
 		return err
@@ -53,18 +57,18 @@ func run(ctx context.Context, cfg Config, runner commandRunner, labels nodeLabel
 	}
 	log.Printf("nvidia checks passed: driver=%s physical_gpus=%d", driverVersion, gpuCount)
 
-	token, err := client.CreateNodeEnrollment(ctx, thunder.CreateNodeEnrollmentRequest{
+	token, err := client.CreateServerEnrollment(ctx, thunder.CreateServerEnrollmentRequest{
 		ZoneID: zoneID,
 	})
 	if err != nil {
 		return fmt.Errorf("create thunder node enrollment: %w", err)
 	}
 
-	command := client.NodeEnrollmentCommand(thunder.NodeEnrollmentCommandRequest{
+	command := client.ServerEnrollmentCommand(thunder.ServerEnrollmentCommandRequest{
 		EnrollmentToken: token.EnrollmentToken,
-		IP:              cfg.ExternalIP,
+		IP:              cfg.AdvertisedIP,
 		Zone:            cfg.Zone,
-		NodeName:        cfg.Node,
+		ServerName:      cfg.Node,
 	})
 	if err := runner.RunShell(ctx, command); err != nil {
 		return fmt.Errorf("run thunder node setup: %w", err)
@@ -128,25 +132,28 @@ func startDRAPlugin(ctx context.Context, cfg Config, thunderClient *thunder.Clie
 	return nil
 }
 
-func resolveNodeAttributes(ctx context.Context, cfg Config, labels nodeLabelReader) (Config, error) {
-	if cfg.Zone != "" && cfg.ExternalIP != "" {
+// resolveNodeAttributes fills in the zone and advertised IP that were not set
+// through the environment. The zone falls back to a node label; the advertised
+// IP falls back to a node label and then to the node's own IP.
+func resolveNodeAttributes(ctx context.Context, cfg Config, nodes nodeInfoReader) (Config, error) {
+	if cfg.Zone != "" && cfg.AdvertisedIP != "" {
 		return cfg, nil
 	}
 
-	nodeLabels, err := labels.Labels(ctx, cfg.Node)
+	node, err := nodes.Node(ctx, cfg.Node)
 	if err != nil {
-		return Config{}, fmt.Errorf("read labels for node %s: %w", cfg.Node, err)
+		return Config{}, fmt.Errorf("read kubernetes node %s: %w", cfg.Node, err)
 	}
 	if cfg.Zone == "" {
-		cfg.Zone = strings.TrimSpace(nodeLabels[cfg.ZoneLabel])
+		cfg.Zone = strings.TrimSpace(node.Labels[cfg.ZoneLabel])
 		if cfg.Zone == "" {
 			return Config{}, fmt.Errorf("%s must be specified or node %s must have label %s", EnvZone, cfg.Node, cfg.ZoneLabel)
 		}
 	}
-	if cfg.ExternalIP == "" {
-		cfg.ExternalIP = strings.TrimSpace(nodeLabels[cfg.ExternalIPLabel])
-		if cfg.ExternalIP == "" {
-			return Config{}, fmt.Errorf("%s must be specified or node %s must have label %s", EnvExternalIP, cfg.Node, cfg.ExternalIPLabel)
+	if cfg.AdvertisedIP == "" {
+		cfg.AdvertisedIP = firstNonEmpty(node.Labels[cfg.AdvertisedIPLabel], node.NodeIP())
+		if cfg.AdvertisedIP == "" {
+			return Config{}, fmt.Errorf("%s must be specified, or node %s must have label %s or an IP address in status.addresses", EnvAdvertisedIP, cfg.Node, cfg.AdvertisedIPLabel)
 		}
 	}
 	return cfg, nil
