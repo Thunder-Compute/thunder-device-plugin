@@ -65,6 +65,22 @@ func startDRAPlugin(ctx context.Context, cfg Config, thunderClient *thunder.Clie
 	cdiStore.ClientInstallCommand = thunderClient.ClientEnrollmentCommandFor(thunder.ClientEnrollmentCommandRequest{
 		EnrollmentTokenEnv: ThunderEnrollmentTokenEnv,
 	})
+	// The CDI hook sets a container up with the Thunder client. Without it a
+	// workload would preload a library its image was never expected to carry.
+	hookPath, err := StageHookBinary(cfg.KubeletPluginDir)
+	if err != nil {
+		return err
+	}
+	cdiStore.HookPath = hookPath
+	cdiStore.CacheDir = cfg.KubeletPluginDir
+	cdiStore.CentralURL = cfg.ThunderAPIURL
+	cdiStore.TelemetryURL = cfg.ThunderTelemetryURL
+	cdiStore.InstallURL = cfg.ThunderInstallURL
+	cdiStore.ArtifactBaseURL = cfg.ArtifactBaseURL
+	cdiStore.LibthunderURL = cfg.LibthunderURL
+	cdiStore.LibthunderSHA256 = cfg.LibthunderSHA256
+	cdiStore.CABundlePath = cfg.CABundlePath
+	log.Printf("staged CDI hook: path=%s cacheDir=%s", hookPath, cfg.KubeletPluginDir)
 
 	driver := &Driver{
 		DriverName: cfg.DRADriverName,

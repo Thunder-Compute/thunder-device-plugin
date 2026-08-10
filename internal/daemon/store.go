@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -468,7 +469,10 @@ const (
 	ThunderClientInstallCommandEnv = "THUNDER_CLIENT_INSTALL_COMMAND"
 )
 
-const cdiHookTimeoutSeconds = 300
+// cdiHookTimeoutSeconds is what the runtime allows the hook, kept above the
+// hook's own cdiHookTimeout so the hook reports its failure rather than being
+// killed mid-write.
+const cdiHookTimeoutSeconds = 120
 
 type FileCDIDeviceStore struct {
 	SpecDir  string
@@ -479,6 +483,22 @@ type FileCDIDeviceStore struct {
 	LibNVMLPath          string
 	NVSMIPath            string
 	ClientInstallCommand string
+
+	// HookPath is the host executable the container runtime runs while
+	// creating a container. Empty disables the hook, which leaves the
+	// container to supply its own Thunder client.
+	HookPath string
+	// CacheDir is where the hook keeps this node's copy of libthunder.so.
+	CacheDir string
+	// The hook is told where to enrol and where to fetch the library, since
+	// it runs as a bare process on the host with none of the daemon's config.
+	CentralURL       string
+	TelemetryURL     string
+	InstallURL       string
+	ArtifactBaseURL  string
+	LibthunderURL    string
+	LibthunderSHA256 string
+	CABundlePath     string
 }
 
 func NewFileCDIDeviceStore(specDir string) *FileCDIDeviceStore {
@@ -500,16 +520,28 @@ func (s *FileCDIDeviceStore) Create(ctx context.Context, allocation Allocation, 
 	if err := os.MkdirAll(stateDir, 0700); err != nil {
 		return "", err
 	}
+	// The hook reads the token from disk rather than taking it on a command
+	// line, where it would be visible in the CDI spec and in host process
+	// listings for as long as the container is being created.
+	if err := os.WriteFile(s.tokenPath(deviceName), []byte(token+"\n"), 0600); err != nil {
+		_ = os.RemoveAll(stateDir)
+		return "", err
+	}
+
+	containerEdits := map[string]any{
+		"env":    s.containerEnv(qualifiedName, allocation, token),
+		"mounts": s.mounts(),
+	}
+	if hooks := s.hooks(deviceName, allocation); len(hooks) > 0 {
+		containerEdits["hooks"] = hooks
+	}
 	spec := map[string]any{
 		"cdiVersion": "0.6.0",
 		"kind":       kind,
 		"devices": []map[string]any{
 			{
-				"name": deviceName,
-				"containerEdits": map[string]any{
-					"env":    s.containerEnv(qualifiedName, allocation, token),
-					"mounts": s.mounts(),
-				},
+				"name":           deviceName,
+				"containerEdits": containerEdits,
 			},
 		},
 	}
@@ -534,6 +566,29 @@ func (s *FileCDIDeviceStore) Create(ctx context.Context, allocation Allocation, 
 		return "", err
 	}
 	return qualifiedName, nil
+}
+
+// StagedClientID reports the Thunder client the CDI hook enrolled for this
+// device. The hook caches the exchanged config in the claim's state dir, and
+// the client ID in it is the only record of the enrollment the daemon has: the
+// exchange happens in the hook, on container create, long after prepare.
+//
+// An empty string means no container ever started for this claim, so no client
+// was created and there is nothing to revoke.
+func (s *FileCDIDeviceStore) StagedClientID(qualifiedName string) string {
+	if strings.TrimSpace(qualifiedName) == "" {
+		return ""
+	}
+	deviceName := cdiDeviceNameFromQualifiedName(qualifiedName)
+	raw, err := os.ReadFile(filepath.Join(s.stateDir(deviceName), thunderConfigFile))
+	if err != nil {
+		return ""
+	}
+	var config ThunderClientConfig
+	if err := json.Unmarshal(raw, &config); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(config.ClientID)
 }
 
 func (s *FileCDIDeviceStore) Remove(ctx context.Context, qualifiedName string) error {
@@ -601,29 +656,78 @@ func (s *FileCDIDeviceStore) stateDir(deviceName string) string {
 	return filepath.Join(s.stateRoot(), deviceName)
 }
 
+// tokenPath is where Create stages the enrollment token for the hook.
 func (s *FileCDIDeviceStore) tokenPath(deviceName string) string {
-	return filepath.Join(s.stateDir(deviceName), "enrollment-token")
+	return filepath.Join(s.stateDir(deviceName), thunderTokenFile)
 }
 
-func (s *FileCDIDeviceStore) hookPath(deviceName string) string {
-	return filepath.Join(s.stateDir(deviceName), "install-client.sh")
+// hooks is the createRuntime hook that stages the Thunder client into the
+// container being created. It runs before pivot_root, so it is the one place
+// that can write into a container filesystem no matter what the image contains
+// — no shell, no curl and no root required of the workload.
+//
+// createRuntime rather than createContainer: the two differ only in which
+// namespaces they run in, and createContainer runs in the container's. That
+// leaves the hook resolving DNS against the host's resolv.conf inside the
+// container's empty network namespace, so every fetch fails with connection
+// refused. createRuntime runs in the runtime's namespaces, where the node's
+// network works, and still sees the rootfs at <bundle>/rootfs.
+func (s *FileCDIDeviceStore) hooks(deviceName string, allocation Allocation) []map[string]any {
+	hookPath := strings.TrimSpace(s.HookPath)
+	if hookPath == "" {
+		return nil
+	}
+
+	args := []string{hookPath, CDIHookCommand, "--state-dir", s.stateDir(deviceName)}
+	for flag, value := range map[string]string{
+		"--central-url":       s.CentralURL,
+		"--telemetry-url":     s.TelemetryURL,
+		"--install-url":       s.InstallURL,
+		"--artifact-base-url": s.ArtifactBaseURL,
+		"--libthunder-url":    s.LibthunderURL,
+		"--libthunder-sha256": s.LibthunderSHA256,
+		"--cache-dir":         s.CacheDir,
+		"--ca-bundle":         s.CABundlePath,
+		"--client-name":       thunderClientName(allocation),
+	} {
+		if strings.TrimSpace(value) != "" {
+			args = append(args, flag, value)
+		}
+	}
+	// Map iteration is unordered and this ends up in a file on disk, so sort
+	// the flag pairs to keep a rewritten spec byte-identical.
+	sortArgPairs(args[4:])
+
+	return []map[string]any{
+		{
+			"hookName": "createRuntime",
+			"path":     hookPath,
+			"args":     args,
+			"timeout":  cdiHookTimeoutSeconds,
+		},
+	}
 }
 
-func (s *FileCDIDeviceStore) hookScript(tokenPath string) string {
-	return fmt.Sprintf(`#!/bin/sh
-set -eu
-TOKEN_FILE=%s
-cleanup() {
-  rm -f "$TOKEN_FILE"
+// thunderClientName is what the enrollment is called in Thunder. The pod name
+// makes an enrollment traceable to the workload holding it; the claim name is
+// the fallback for a claim nothing has reserved yet.
+func thunderClientName(allocation Allocation) string {
+	if name := strings.TrimSpace(allocation.Consumer.Name); name != "" {
+		return name
+	}
+	return strings.TrimSpace(allocation.ClaimName)
 }
-trap cleanup EXIT
-if [ ! -s "$TOKEN_FILE" ]; then
-  exit 0
-fi
-%s="$(cat "$TOKEN_FILE")"
-export %s
-%s
-`, shellQuote(tokenPath), ThunderEnrollmentTokenEnv, ThunderEnrollmentTokenEnv, strings.TrimSpace(s.ClientInstallCommand))
+
+// sortArgPairs sorts a flat --flag/value slice by flag, keeping pairs together.
+func sortArgPairs(args []string) {
+	pairs := make([][2]string, 0, len(args)/2)
+	for i := 0; i+1 < len(args); i += 2 {
+		pairs = append(pairs, [2]string{args[i], args[i+1]})
+	}
+	sort.Slice(pairs, func(i, j int) bool { return pairs[i][0] < pairs[j][0] })
+	for i, pair := range pairs {
+		args[i*2], args[i*2+1] = pair[0], pair[1]
+	}
 }
 
 func (s *FileCDIDeviceStore) containerEnv(qualifiedName string, allocation Allocation, token string) []string {

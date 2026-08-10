@@ -41,4 +41,7 @@ args:
     command -v nvidia-smi
     nvidia-smi || true
     find /usr /lib -name 'libcuda.so*' -o -name 'libnvidia-ml.so*' 2>/dev/null | sort || true
-    sleep infinity
+    # exec, so PID 1 is sleep and not the shell. A shell waiting on a child
+    # neither forwards SIGTERM nor exits, so without this the pod ignores
+    # deletion and waits out the full termination grace period.
+    exec sleep infinity

@@ -106,6 +106,10 @@ type ThunderClient struct {
 type TokenIssuer interface {
 	Mint(ctx context.Context, allocation Allocation) (tokenID string, token string, expiresAt time.Time, err error)
 	Revoke(ctx context.Context, tokenID string) error
+	// RevokeClient revokes the client an enrollment token was exchanged for.
+	// Revoking the token alone does not: once spent, the token and the client
+	// it produced are separate objects in Thunder.
+	RevokeClient(ctx context.Context, clientID string) error
 }
 
 type ThunderClientStore interface {
@@ -117,6 +121,9 @@ type ThunderClientStore interface {
 type CDIDeviceStore interface {
 	Create(ctx context.Context, allocation Allocation, token string) (qualifiedName string, err error)
 	Remove(ctx context.Context, qualifiedName string) error
+	// StagedClientID reports the Thunder client the CDI hook enrolled for this
+	// device, or "" if no container ever started and none was created.
+	StagedClientID(qualifiedName string) string
 }
 
 type GuestArtifacts struct {
@@ -232,6 +239,19 @@ func (d *Driver) unprepareOne(ctx context.Context, claim kubeletplugin.Namespace
 		return fmt.Errorf("load ThunderClient: %w", err)
 	}
 
+	// The client has to go before the CDI state that records its ID does.
+	// A claim whose container never started has no client, only an unspent
+	// token, and revoking the token below is the whole cleanup.
+	clientID := ""
+	if strings.TrimSpace(client.CDIName) != "" {
+		clientID = d.CDI.StagedClientID(client.CDIName)
+	}
+	if clientID != "" {
+		if err := d.Tokens.RevokeClient(ctx, clientID); err != nil {
+			return fmt.Errorf("revoke thunder client %q: %w", clientID, err)
+		}
+	}
+
 	if strings.TrimSpace(client.EnrollmentTokenID) != "" {
 		if err := d.Tokens.Revoke(ctx, client.EnrollmentTokenID); err != nil {
 			return fmt.Errorf("revoke enrollment token %q: %w", client.EnrollmentTokenID, err)
@@ -256,7 +276,8 @@ func (d *Driver) unprepareOne(ctx context.Context, claim kubeletplugin.Namespace
 		return fmt.Errorf("delete ThunderClient: %w", err)
 	}
 	if d.Logger != nil {
-		d.Logger.Info("unprepared Thunder ResourceClaim", "claim", claim.String(), "tokenID", client.EnrollmentTokenID)
+		d.Logger.Info("unprepared Thunder ResourceClaim", "claim", claim.String(),
+			"tokenID", client.EnrollmentTokenID, "clientID", clientID)
 	}
 	return nil
 }
@@ -489,6 +510,21 @@ func (i ThunderTokenIssuer) Mint(ctx context.Context, allocation Allocation) (st
 		expiresAt = *token.ExpiresAt
 	}
 	return token.EnrollmentTokenID, token.EnrollmentToken, expiresAt, nil
+}
+
+// RevokeClient revokes a client that was enrolled by exchanging a token.
+func (i ThunderTokenIssuer) RevokeClient(ctx context.Context, clientID string) error {
+	if strings.TrimSpace(clientID) == "" {
+		return nil
+	}
+	if i.Client == nil {
+		return errors.New("thunder client is required")
+	}
+	_, err := i.Client.RevokeClient(ctx, clientID)
+	if thunder.IsNotFound(err) {
+		return nil
+	}
+	return err
 }
 
 func (i ThunderTokenIssuer) Revoke(ctx context.Context, tokenID string) error {

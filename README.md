@@ -41,13 +41,21 @@ Two components:
 | | What it does |
 | --- | --- |
 | **operator** (Deployment) | Reads Thunder inventory. Publishes one `ResourceSlice` device per GPU, one pool per zone + GPU type, and one `DeviceClass` per GPU type. |
-| **daemon** (DaemonSet) | Enrolls the node with Thunder, serves the DRA kubelet plugin, mints a client token per claim, writes CDI specs and VM guest artifacts. |
+| **daemon** (DaemonSet) | Enrolls the node with Thunder, serves the DRA kubelet plugin, mints a client token per claim, writes CDI specs and VM guest artifacts, and stages the Thunder client into each container. |
 
 ```text
 Thunder inventory → ResourceSlice + DeviceClass → scheduler allocates
                                                 → kubelet prepare
                                                 → ThunderClient + CDI / guest artifacts
+                                                → CDI hook stages the client
+                                                  into the container
 ```
+
+Pods need no Thunder client in their image. A CDI hook installs `libthunder.so`
+and its config into each container as it is created, so a stock `ubuntu` image
+works unmodified — no shell, no `curl` and no root required of the workload.
+The library is downloaded once per node from `thunder.artifactBaseURL`, verified
+against the digest its installer pins, and cached by digest.
 
 Everything lives under one domain:
 
@@ -448,6 +456,8 @@ misspelled `--set` key fails the install.
 | --- | --- | --- |
 | `thunder.secretName` | `thunder-api` | Existing Secret holding `THUNDER_API_TOKEN` |
 | `thunder.apiURL` | `https://registry.thundercompute.com` | Thunder API endpoint |
+| `thunder.artifactBaseURL` | `https://get.thundercompute.com` | Where the Thunder client library is downloaded from |
+| `thunder.telemetryURL` | `https://telemetry.thundercompute.com:2096` | Telemetry collector written into each container's client config |
 | `operator.extendedResourcePrefix` | `thundercompute.com/gpu-` | Prefix for per-model extended resources; `""` for clusters below 1.36 |
 | `operator.reconcileInterval` | `60s` | How quickly inventory and targets are picked up |
 | `operator.orphanGracePeriod` | `5m` | How long a client resource may outlive its claim before being revoked |

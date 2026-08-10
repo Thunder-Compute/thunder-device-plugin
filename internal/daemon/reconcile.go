@@ -42,12 +42,13 @@ type reconciler struct {
 	startPlugin func(context.Context, Config, *thunder.Client, string) error
 
 	// State carried between passes.
-	resolved      Config
-	zoneID        string
-	pluginStarted bool
-	everHealthy   bool
-	unhealthy     int
-	passes        int
+	resolved       Config
+	zoneID         string
+	pluginStarted  bool
+	everHealthy    bool
+	unhealthy      int
+	passes         int
+	libthunderPath string
 }
 
 // loop reconciles until the context is cancelled. It returns only on
@@ -115,6 +116,10 @@ func (r *reconciler) reconcile(ctx context.Context) error {
 	if err := r.ensureEnrolled(ctx, cfg); err != nil {
 		return err
 	}
+	// Warm the library cache from here, where the daemon has ordinary node
+	// networking and a failure only costs a retry. The hook can download it
+	// too, but doing so blocks a container start on a ~32MB fetch.
+	r.ensureLibthunder(ctx, cfg)
 	return r.ensurePlugin(ctx, cfg)
 }
 
@@ -195,6 +200,32 @@ func (r *reconciler) enroll(ctx context.Context, cfg Config) error {
 
 	log.Printf("thunder node setup completed: node=%s enrollmentTokenId=%s", cfg.Node, token.EnrollmentTokenID)
 	return nil
+}
+
+// ensureLibthunder pre-downloads the client library the CDI hook stages into
+// containers. Failures are logged, not returned: a node that cannot reach the
+// artifact host can still serve claims whose library is already cached, and the
+// hook reports the problem against the specific container if it is not.
+func (r *reconciler) ensureLibthunder(ctx context.Context, cfg Config) {
+	if !cfg.DRAEnabled {
+		return
+	}
+	cache := &LibthunderCache{
+		Dir:             cfg.KubeletPluginDir,
+		InstallURL:      cfg.ThunderInstallURL,
+		URL:             cfg.LibthunderURL,
+		SHA256:          cfg.LibthunderSHA256,
+		ArtifactBaseURL: cfg.ArtifactBaseURL,
+	}
+	path, err := cache.Ensure(ctx)
+	if err != nil {
+		log.Printf("could not pre-cache libthunder.so on node %s (the CDI hook will retry per container): %v", cfg.Node, err)
+		return
+	}
+	if path != r.libthunderPath {
+		log.Printf("libthunder.so cached: path=%s", path)
+		r.libthunderPath = path
+	}
 }
 
 // ensurePlugin starts the DRA kubelet plugin once. It is never stopped when
