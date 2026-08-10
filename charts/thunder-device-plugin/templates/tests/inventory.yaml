@@ -17,27 +17,15 @@ spec:
     - name: inventory
       image: "{{ .Values.tests.image.repository }}:{{ .Values.tests.image.tag }}"
       imagePullPolicy: {{ .Values.tests.image.pullPolicy }}
-      command:
-        - /bin/sh
-        - -ec
-        - |
-          # The operator publishes one ResourceSlice per zone and GPU type.
-          # Poll rather than check once: the first reconcile happens shortly
-          # after the Deployment becomes ready.
-          deadline=$(( $(date +%s) + {{ .Values.tests.timeoutSeconds }} ))
-          while [ "$(date +%s)" -lt "$deadline" ]; do
-            slices=$(kubectl get resourceslices \
-              -l app.kubernetes.io/name=thunder-dra-driver \
-              -o jsonpath='{.items[*].metadata.name}' 2>/dev/null || true)
-            if [ -n "$slices" ]; then
-              echo "thunder inventory published: $slices"
-              exit 0
-            fi
-            sleep 5
-          done
-          echo "no ResourceSlices published by the thunder operator after {{ .Values.tests.timeoutSeconds }}s" >&2
-          echo "check: kubectl -n {{ .Release.Namespace }} logs -l app.kubernetes.io/component=operator" >&2
-          exit 1
+      # The image is distroless and has no shell, so this is a single kubectl
+      # call rather than a polling loop. `--for=create` blocks until a matching
+      # ResourceSlice exists and exits non-zero if none appears in time.
+      args:
+        - wait
+        - --for=create
+        - resourceslices
+        - --selector=app.kubernetes.io/name=thunder-dra-driver
+        - --timeout={{ .Values.tests.timeoutSeconds }}s
       securityContext:
         allowPrivilegeEscalation: false
         readOnlyRootFilesystem: true

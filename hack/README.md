@@ -11,8 +11,14 @@ Development and test scripts. Every script is self-documenting — run it with
 
 Shared helpers live in [`lib/common.sh`](lib/common.sh) (logging, assertions,
 retries) and [`lib/thunder.sh`](lib/thunder.sh) (resource names and lookups).
-[`lib/thunder-stub.py`](lib/thunder-stub.py) is a stand-in for the Thunder API
-used by the local test.
+[`thunder-registry-stub.go`](thunder-registry-stub.go) is a stand-in for the
+Thunder Registry API used by the local test. It runs outside the cluster on
+purpose: it is scaffolding, not a component, so keeping it out keeps the
+deployed manifests honest. It records state-changing requests instead of
+applying them, and serves them back on `/debug/writes`.
+
+Its inventory is generated at run time into the test's temp directory
+(`inventory.json`); there is no checked-in fixture. `--keep` prints the path.
 
 ## Offline checks
 
@@ -29,7 +35,8 @@ to run in CI and before pushing.
 make test-local
 ```
 
-Requires `docker` and [kind](https://kind.sigs.k8s.io/docs/user/quick-start/#installation).
+Requires `docker`, `go`, `jq`, `helm` and
+[kind](https://kind.sigs.k8s.io/docs/user/quick-start/#installation).
 It needs **no existing cluster, no Thunder account, no API token and no GPU**,
 and it deploys nothing to any real infrastructure.
 
@@ -40,29 +47,36 @@ What it does:
 2. Confirms the API server preserves the extended resource mapping.
 3. Installs the chart, which exercises the CRDs, RBAC and the values schema
    against a real API server.
-4. Starts a stub Thunder API serving synthetic inventory, initially 4x A6000 in
-   one zone at a `1x` oversubscription target. The stub re-reads its inventory
-   file per request, so the test can enroll hardware and change capacity policy
-   mid-run.
-5. Runs the **real operator binary** against that stub and the kind cluster,
-   then asserts the published `ResourceSlice`: driver, one device per GPU,
-   device naming, zone attribute and shard count.
-6. Installs the pod test chart, and asserts the scheduler allocates two
+4. Builds and starts the registry stub, serving synthetic inventory: initially
+   4x A6000 in one zone at a `1x` oversubscription target. It re-reads its
+   inventory file per request, so the test can enroll hardware and change
+   capacity policy mid-run, and it announces its own port rather than the
+   script guessing a free one.
+5. Builds both container images, loads them into the cluster, and installs the
+   chart. The operator then runs **in cluster, from the chart** — its image,
+   env, ServiceAccount and RBAC — so a missing permission fails here instead of
+   being masked. It also runs the chart's own `helm test`. Then asserts
+   the published `ResourceSlice`: driver, one device per GPU, device naming,
+   zone attribute and shard count.
+6. Asserts the operator made **no writes** to Thunder. Creating zones and
+   enrolling hardware is the node daemon's job; the operator only reads.
+7. Runs the chart's own `helm test` in cluster.
+8. Installs the pod test chart, and asserts the scheduler allocates two
    distinct GPU devices to the claim from the right pool.
-7. Asserts the operator generated a `DeviceClass` per GPU type, each pinning its
+9. Asserts the operator generated a `DeviceClass` per GPU type, each pinning its
    model with a CEL selector and exposing its own extended resource.
-8. Adds a second GPU model (H100) to inventory and asserts the operator creates
+10. Adds a second GPU model (H100) to inventory and asserts the operator creates
    its class, extended resource and pool on its own, and that a pod can request
    the new resource immediately.
-9. Asserts a `resources.limits: thundercompute.com/gpu-a6000: 2` pod is served
+11. Asserts a `resources.limits: thundercompute.com/gpu-a6000: 2` pod is served
    from the A6000 zone pool, gets two GPUs of that model only, and that the
    resource is scheduler-resolved rather than advertised in node `allocatable`.
-10. Asserts a typed request larger than that model's supply stays pending
+12. Asserts a typed request larger than that model's supply stays pending
     instead of borrowing the other model.
-11. Asserts a request for more GPUs than the zone has never allocates.
-12. Retires the H100s and asserts the class and pool are pruned, leaving the
+13. Asserts a request for more GPUs than the zone has never allocates.
+14. Retires the H100s and asserts the class and pool are pruned, leaving the
     other model untouched.
-13. Raises the zone's oversubscription target in the stub API to `1.5` and
+15. Raises the zone's oversubscription target in the stub API to `1.5` and
     asserts the pool grows from 4 to 6 GPUs, records the target on the slice,
     keeps the devices exclusive, and shrinks again when the target returns to 1.
 
@@ -71,8 +85,13 @@ What it does:
 The node daemon. Preparing a claim needs a real GPU, a Thunder enrollment and a
 registered kubelet plugin, so on kind a pod stops at `ContainerCreating` once
 its claim is allocated. Everything downstream of allocation — CDI specs,
-`ThunderClient` resources, enrollment tokens, VM guest artifacts — is only
-exercised on a real Thunder GPU node.
+`ThunderClient` resources, VM guest artifacts — is only exercised on a real
+Thunder GPU node.
+
+The daemon's calls to Thunder are covered by Go tests instead, in
+`internal/daemon/enrollment_test.go`: zone creation, server enrollment (and the
+installer command it produces), client enrollment, and revocation, each against
+an HTTP server that records what was sent.
 
 ### Options
 

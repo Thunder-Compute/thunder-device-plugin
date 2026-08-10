@@ -86,6 +86,18 @@ pod_is_running() {
   [[ "$(kube -n "$1" get pod "$2" -o jsonpath='{.status.phase}' 2>/dev/null)" == "Running" ]]
 }
 
+# operator_logs prints the in-cluster operator's logs.
+operator_logs() {
+  kube -n "${NAMESPACE}" logs -l app.kubernetes.io/component=operator --tail=200 2>/dev/null || true
+}
+
+# kind_bridge_address prints the host's IPv4 address on the kind docker bridge,
+# which is how a workload in the cluster reaches a server on the host.
+kind_bridge_address() {
+  docker network inspect kind 2>/dev/null |
+    jq -r '.[0].IPAM.Config[]? | select((.Gateway // "") | test(":") | not) | .Gateway' | head -1
+}
+
 # pool_device_count_is <gpu-type> <count> is true once the pool publishes
 # exactly that many GPUs.
 pool_device_count_is() {

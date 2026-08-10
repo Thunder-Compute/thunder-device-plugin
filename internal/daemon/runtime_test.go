@@ -449,7 +449,10 @@ func (r *fakeRunner) CombinedOutput(_ context.Context, name string, args ...stri
 	return r.outputs[key], r.errors[key]
 }
 
-func (r *fakeRunner) RunShell(_ context.Context, _ string) error {
+// RunShell records the command so a test can assert on what the daemon asked
+// the host to run, such as the Thunder installer and its environment.
+func (r *fakeRunner) RunShell(_ context.Context, command string) error {
+	r.commands = append(r.commands, command)
 	return nil
 }
 

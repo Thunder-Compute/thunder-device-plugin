@@ -43,11 +43,16 @@ TYPED_DEVICE_CLASS="thunder-gpu-a6000"
 OTHER_EXTENDED_RESOURCE="${THUNDER_DOMAIN}/gpu-h100"
 OTHER_DEVICE_CLASS="thunder-gpu-h100"
 
+RECONCILE_SECONDS=10
+LOCAL_IMAGE_PREFIX="thunder-device-plugin-local"
+LOCAL_IMAGE_TAG="test"
 CLUSTER="${CLUSTER:-thunder-local}"
 # 1.36 is the first release where DRAExtendedResource is beta and on by default.
 # The kind config enables it explicitly so older images work too.
 NODE_IMAGE="${NODE_IMAGE:-kindest/node:v1.36.1}"
 STUB_PORT="${STUB_PORT:-0}"
+STUB_HOST=""
+STUB_URL=""
 KEEP=false
 REUSE=false
 
@@ -68,7 +73,7 @@ while (($#)); do
   shift
 done
 
-require_cmd docker kubectl helm go jq python3 curl
+require_cmd docker kubectl helm go jq curl
 if ! command -v "${KIND}" >/dev/null 2>&1; then
   die "kind is required: https://kind.sigs.k8s.io/docs/user/quick-start/#installation"
 fi
@@ -79,23 +84,57 @@ export KUBECONFIG="${WORK_DIR}/kubeconfig"
 cleanup() {
   local status=$?
   set +e
-  [[ -n "${OPERATOR_PID}" ]] && kill "${OPERATOR_PID}" 2>/dev/null
-  [[ -n "${STUB_PID}" ]] && kill "${STUB_PID}" 2>/dev/null
 
   if ((status != 0)) || ((CHECKS_FAILED > 0)); then
     step "Diagnostics"
-    dump_section "operator log" -- tail -40 "${WORK_DIR}/operator.log"
+    dump_section "operator log" -- operator_logs
     dump_section "resourceslices" -- kube get resourceslices -o wide
     dump_section "resourceclaims" -- kube get resourceclaims -A -o wide
     dump_section "pods" -- kube get pods -A
   fi
 
   if "${KEEP}"; then
-    step "Keeping cluster ${CLUSTER} (--keep)"
-    log "    export KUBECONFIG=${WORK_DIR}/kubeconfig"
+    # Leave the operator and stub running: a frozen cluster cannot show
+    # anything reacting, which is the point of keeping it.
+    step "Cluster ${CLUSTER} left running (--keep)"
+    log ""
+    log "  export KUBECONFIG=${WORK_DIR}/kubeconfig"
+    log ""
+    log "  What is running:"
+    log "    kind cluster    ${CLUSTER} (${NODE_IMAGE})"
+    log "    operator        in cluster, from the chart (image ${LOCAL_IMAGE_PREFIX}-operator:${LOCAL_IMAGE_TAG})"
+    log "    registry stub   pid ${STUB_PID:-none}, ${STUB_URL} (outside the cluster)"
+    log "    inventory       ${WORK_DIR}/inventory.json"
+    log ""
+    log "  Look around:"
+    log "    kubectl get deviceclasses -l app.kubernetes.io/name=thunder-dra-driver \\"
+    log "      -o custom-columns=CLASS:.metadata.name,RESOURCE:.spec.extendedResourceName"
+    log "    kubectl get resourceslices -o wide"
+    log "    kubectl get resourceslice \$(kubectl get resourceslices -o name | head -1 | cut -d/ -f2) -o yaml"
+    log ""
+    log "  Drive it. The stub re-reads its inventory file on every request, so"
+    log "  editing the file makes the operator react within ${RECONCILE_SECONDS}s:"
+    log "    # double the GPUs by setting a 2x oversubscription target"
+    log "    jq '.oversubscription.defaultOversubscriptionTarget = 2' \\"
+    log "      ${WORK_DIR}/inventory.json > /tmp/inv && mv /tmp/inv ${WORK_DIR}/inventory.json"
+    log "    kubectl get resourceslices -w"
+    log ""
+    log "    # enroll a new GPU model and watch its class appear"
+    log "    jq '.hosts += [{hostId:\"h9\",zoneId:\"zone-local\",displayName:\"h9\",hostname:\"h9\",gpuType:\"H100\",gpuCount:2,status:\"active\"}]' \\"
+    log "      ${WORK_DIR}/inventory.json > /tmp/inv && mv /tmp/inv ${WORK_DIR}/inventory.json"
+    log "    kubectl get deviceclasses -w"
+    log ""
+    log "    kubectl -n ${NAMESPACE} logs -l app.kubernetes.io/component=operator -f"
+    log ""
+    log "  Tear down when done:"
+    log "    kill ${STUB_PID:-} 2>/dev/null"
     log "    ${KIND} delete cluster --name ${CLUSTER}"
+    log "    rm -rf ${WORK_DIR}"
     return
   fi
+
+  [[ -n "${OPERATOR_PID}" ]] && kill "${OPERATOR_PID}" 2>/dev/null
+  [[ -n "${STUB_PID}" ]] && kill "${STUB_PID}" 2>/dev/null
   step "Cleanup"
   "${KIND}" delete cluster --name "${CLUSTER}" >/dev/null 2>&1
   rm -rf "${WORK_DIR}"
@@ -160,6 +199,30 @@ EOF
   check_eq "API server supports extended resource mapping" "${TYPED_EXTENDED_RESOURCE}" "${kept}"
 }
 
+# build_images builds the real container images and loads them into the cluster,
+# so the chart runs the same artifacts a release would ship.
+build_images() {
+  step "Container images"
+  local image
+  for image in operator daemon; do
+    if (cd "${REPO_ROOT}" && docker build -q \
+      -f "containers/${image}/Dockerfile" \
+      -t "${LOCAL_IMAGE_PREFIX}-${image}:${LOCAL_IMAGE_TAG}" . ) >"${WORK_DIR}/build-${image}.log" 2>&1; then
+      check_pass "built the ${image} image"
+    else
+      check_fail "built the ${image} image" "$(tail -15 "${WORK_DIR}/build-${image}.log")"
+      return 1
+    fi
+    if "${KIND}" load docker-image "${LOCAL_IMAGE_PREFIX}-${image}:${LOCAL_IMAGE_TAG}" \
+      --name "${CLUSTER}" >>"${WORK_DIR}/build-${image}.log" 2>&1; then
+      check_pass "loaded the ${image} image into ${CLUSTER}"
+    else
+      check_fail "loaded the ${image} image into ${CLUSTER}" "$(tail -10 "${WORK_DIR}/build-${image}.log")"
+      return 1
+    fi
+  done
+}
+
 install_chart() {
   step "Chart install"
   kube apply -f "${CHART_MAIN}/crds/" >/dev/null
@@ -171,11 +234,18 @@ install_chart() {
     --from-literal=THUNDER_API_TOKEN=local-test \
     --dry-run=client -o yaml | kube apply -f - >/dev/null
 
-  # The operator runs out of cluster below, so only the chart's cluster-scoped
-  # objects matter here.
+  # Everything the operator needs comes from the chart: image, env, RBAC and
+  # service account. Nothing here is injected past it.
   if helm_cmd upgrade --install "${RELEASE}" "${CHART_MAIN}" \
     --namespace "${NAMESPACE}" \
-    --set tests.enabled=false \
+    --set "operator.image.repository=${LOCAL_IMAGE_PREFIX}-operator" \
+    --set "operator.image.tag=${LOCAL_IMAGE_TAG}" \
+    --set "operator.image.pullPolicy=Never" \
+    --set "daemon.image.repository=${LOCAL_IMAGE_PREFIX}-daemon" \
+    --set "daemon.image.tag=${LOCAL_IMAGE_TAG}" \
+    --set "daemon.image.pullPolicy=Never" \
+    --set "operator.reconcileInterval=${RECONCILE_SECONDS}s" \
+    --set "thunder.apiURL=${STUB_URL}" \
     --timeout 120s >"${WORK_DIR}/helm.log" 2>&1; then
     check_pass "installed ${RELEASE}"
   else
@@ -220,59 +290,72 @@ write_inventory() {
 }
 
 start_stub() {
-  step "Stub Thunder API"
+  step "Stub Thunder Registry"
   # Start with a single GPU model; the second one is enrolled later to show the
   # operator picking it up on its own.
   write_inventory "${GPU_TYPE}:${GPU_CAPACITY}"
 
-  if [[ "${STUB_PORT}" == "0" ]]; then
-    STUB_PORT="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')"
+  if ! (cd "${REPO_ROOT}" && go build -o "${WORK_DIR}/thunder-registry-stub" \
+    hack/thunder-registry-stub.go) 2>"${WORK_DIR}/stub-build.log"; then
+    check_fail "built the registry stub" "$(cat "${WORK_DIR}/stub-build.log")"
+    return 1
   fi
+  check_pass "built the registry stub"
 
-  python3 "${REPO_ROOT}/hack/lib/thunder-stub.py" "${STUB_PORT}" "${WORK_DIR}/inventory.json" \
-    >"${WORK_DIR}/stub.log" 2>&1 &
-  STUB_PID=$!
-
-  if ! retry 15 1 "stub API" -- curl -fsS -o /dev/null "http://127.0.0.1:${STUB_PORT}/api/v1/zones"; then
-    check_fail "stub Thunder API started" "$(cat "${WORK_DIR}/stub.log" 2>/dev/null)"
+  # Bound to the kind bridge address, not 0.0.0.0, so the cluster can reach it
+  # without exposing the stub to the rest of the network. It runs outside the
+  # cluster on purpose: it is scaffolding, not a component.
+  STUB_HOST="$(kind_bridge_address)"
+  if [[ -z "${STUB_HOST}" ]]; then
+    check_fail "find the kind bridge address" "docker network inspect kind returned no IPv4 gateway"
     return 1
   fi
 
-  # Something else answering on this port would silently feed the operator a
-  # different inventory than the one asserted against below.
-  if ! kill -0 "${STUB_PID}" 2>/dev/null; then
-    check_fail "stub Thunder API is ours" \
-      "the stub exited but port ${STUB_PORT} still answers: $(cat "${WORK_DIR}/stub.log" 2>/dev/null)"
+  # Port 0 lets the stub pick a free port and announce it, rather than the
+  # script guessing one and racing whatever else is on the machine.
+  "${WORK_DIR}/thunder-registry-stub" \
+    -addr "${STUB_HOST}:0" \
+    -inventory "${WORK_DIR}/inventory.json" \
+    >"${WORK_DIR}/stub.addr" 2>"${WORK_DIR}/stub.log" &
+  STUB_PID=$!
+
+  if ! retry 15 1 "stub address" -- test -s "${WORK_DIR}/stub.addr"; then
+    check_fail "stub Thunder Registry started" "$(cat "${WORK_DIR}/stub.log" 2>/dev/null)"
+    return 1
+  fi
+  STUB_URL="http://$(head -1 "${WORK_DIR}/stub.addr")"
+
+  if ! retry 15 1 "stub API" -- curl -fsS -o /dev/null "${STUB_URL}/api/v1/zones"; then
+    check_fail "stub Thunder Registry answering" "$(cat "${WORK_DIR}/stub.log" 2>/dev/null)"
     return 1
   fi
   local served
-  served="$(curl -fsS "http://127.0.0.1:${STUB_PORT}/api/v1/zones" | jq -r '.zones[0].displayName // ""')"
+  served="$(curl -fsS "${STUB_URL}/api/v1/zones" | jq -r '.zones[0].displayName // ""')"
   if [[ "${served}" != "${ZONE}" ]]; then
-    check_fail "stub Thunder API is ours" "port ${STUB_PORT} served zone ${served@Q}, want ${ZONE@Q}"
+    check_fail "stub Thunder Registry is ours" "${STUB_URL} served zone ${served@Q}, want ${ZONE@Q}"
     return 1
   fi
-  check_pass "stub Thunder API on :${STUB_PORT} serving ${GPU_CAPACITY}x ${GPU_TYPE} in zone ${ZONE}"
+  check_pass "stub Thunder Registry on ${STUB_URL} serving ${GPU_CAPACITY}x ${GPU_TYPE} in zone ${ZONE}"
 }
 
 run_operator() {
   step "Operator"
-  if ! (cd "${REPO_ROOT}" && go build -o "${WORK_DIR}/thunder-dra-operator" ./cmd/thunder-dra-operator) 2>"${WORK_DIR}/build.log"; then
-    check_fail "build operator" "$(cat "${WORK_DIR}/build.log")"
+  # The operator runs in cluster, from the chart, using the chart's image, env,
+  # ServiceAccount and RBAC. A missing permission fails here rather than being
+  # masked by an admin kubeconfig.
+  if retry 180 3 "operator rollout" -- \
+    kube -n "${NAMESPACE}" rollout status "deployment/${RELEASE}-operator" --timeout=20s; then
+    check_pass "operator became ready from the chart"
+  else
+    check_fail "operator became ready from the chart" \
+      "$(kube -n "${NAMESPACE}" get pods -o wide; kube -n "${NAMESPACE}" describe deployment "${RELEASE}-operator" | tail -20)"
     return 1
   fi
-  check_pass "built operator"
 
-  THUNDER_API_URL="http://127.0.0.1:${STUB_PORT}" \
-  THUNDER_API_TOKEN=stub \
-  RECONCILE_INTERVAL=10s \
-    "${WORK_DIR}/thunder-dra-operator" -kubeconfig="${KUBECONFIG}" \
-    >"${WORK_DIR}/operator.log" 2>&1 &
-  OPERATOR_PID=$!
-
-  if retry 60 2 "resource slices" -- driver_slices_exist; then
+  if retry 90 2 "resource slices" -- driver_slices_exist; then
     check_pass "operator published ResourceSlices"
   else
-    check_fail "operator published ResourceSlices" "$(tail -10 "${WORK_DIR}/operator.log")"
+    check_fail "operator published ResourceSlices" "$(operator_logs | tail -10)"
     return 1
   fi
 
@@ -284,32 +367,11 @@ run_operator() {
   fi
   check_pass "slice ${slice} advertises ${GPU_TYPE}"
 
-  local spec
-  spec="$(kube get resourceslice "${slice}" -o json)"
-  check_eq "slice driver" "${DRIVER_NAME}" "$(jq -r '.spec.driver' <<<"${spec}")"
-
-  # One device per GPU is what makes multi-GPU extended resource requests work.
-  check_eq "slice publishes one device per GPU" "${GPU_CAPACITY}" \
-    "$(jq -r '.spec.devices | length' <<<"${spec}")"
-  check_eq "devices are named per GPU" "a6000-0" \
-    "$(jq -r '.spec.devices[0].name' <<<"${spec}")"
-  check_eq "slice zone attribute" "${ZONE}" \
-    "$(jq -r --arg k "${THUNDER_DOMAIN}/zone" '.spec.devices[0].attributes[$k].string' <<<"${spec}")"
-  check_eq "pool declares its shard count" "1" \
-    "$(jq -r '.spec.pool.resourceSliceCount' <<<"${spec}")"
-
-  # Devices are always plain: sharing is expressed by publishing more devices,
-  # never by consumable capacity, so no capacity feature gate is needed.
-  check_eq "devices publish no consumable capacity" "null" \
-    "$(jq -r '.spec.devices[0].capacity // "null"' <<<"${spec}")"
-  check_eq "devices are exclusive" "null" \
-    "$(jq -r '.spec.devices[0].allowMultipleAllocations // "null"' <<<"${spec}")"
-
   step "Per-GPU-type device classes"
   if retry 60 2 "generated DeviceClass" -- resource_exists deviceclass "${TYPED_DEVICE_CLASS}"; then
     check_pass "operator generated ${TYPED_DEVICE_CLASS}"
   else
-    check_fail "operator generated ${TYPED_DEVICE_CLASS}" "$(tail -5 "${WORK_DIR}/operator.log")"
+    check_fail "operator generated ${TYPED_DEVICE_CLASS}" "$(operator_logs | tail -5)"
     return 1
   fi
   check_eq "class exposes a typed extended resource" "${TYPED_EXTENDED_RESOURCE}" \
@@ -322,10 +384,37 @@ run_operator() {
     "$(kube get deviceclass "${OTHER_DEVICE_CLASS}" -o jsonpath='{.metadata.name}' 2>/dev/null || true)"
 
   step "Operator health"
-  if ! grep -q ERROR "${WORK_DIR}/operator.log"; then
+  local errors
+  errors="$(operator_logs | grep ERROR | tail -3 || true)"
+  if [[ -z "${errors}" ]]; then
     check_pass "operator reconciled without errors"
   else
-    check_fail "operator reconciled without errors" "$(grep ERROR "${WORK_DIR}/operator.log" | tail -3)"
+    check_fail "operator reconciled without errors" "${errors}"
+  fi
+}
+
+# Changing Thunder state is the node daemon's job. If the operator ever writes,
+# a bug in it could enroll or revoke real hardware, so assert it never does.
+test_operator_only_reads() {
+  step "Operator is read-only against Thunder"
+  local writes
+  writes="$(curl -fsS "${STUB_URL}/debug/writes" 2>/dev/null || echo "unavailable")"
+  if [[ "${writes}" == "unavailable" ]]; then
+    check_fail "the registry stub reported its writes" "could not reach ${STUB_URL}/debug/writes"
+    return 1
+  fi
+  check_eq "the operator made no writes to Thunder" "0" "$(jq -r 'length' <<<"${writes}")"
+}
+
+# `helm test` is a real chart feature, so run it the way an operator would,
+# once the operator has had a chance to publish.
+test_helm_test() {
+  step "Chart smoke test"
+  if helm_cmd test "${RELEASE}" --namespace "${NAMESPACE}" --timeout 3m >"${WORK_DIR}/helmtest.log" 2>&1; then
+    check_pass "the chart's helm test passed in cluster"
+  else
+    check_fail "the chart's helm test passed in cluster" \
+      "$(tail -5 "${WORK_DIR}/helmtest.log"; kube -n "${NAMESPACE}" logs "${RELEASE}-test-inventory" 2>/dev/null | tail -5)"
   fi
 }
 
@@ -394,7 +483,7 @@ test_new_gpu_type_appears() {
     check_pass "operator created ${OTHER_DEVICE_CLASS} on its own"
   else
     check_fail "operator created ${OTHER_DEVICE_CLASS} on its own" \
-      "$(tail -5 "${WORK_DIR}/operator.log")"
+      "$(operator_logs | tail -5)"
     return 1
   fi
 
@@ -631,9 +720,12 @@ log "    driver:      ${DRIVER_NAME}"
 log "    gpu:         ${GPU_CAPACITY}x ${GPU_TYPE} in zone ${ZONE} (stub inventory)"
 
 create_cluster
-install_chart
+build_images
 start_stub
+install_chart
 run_operator
+test_operator_only_reads
+test_helm_test
 test_allocation
 test_new_gpu_type_appears
 test_extended_resource

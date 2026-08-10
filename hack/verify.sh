@@ -31,7 +31,7 @@ verify_go() {
   require_cmd go
 
   local unformatted
-  unformatted="$(gofmt -l ./cmd ./internal)"
+  unformatted="$(gofmt -l ./cmd ./internal hack/thunder-registry-stub.go)"
   if [[ -z "${unformatted}" ]]; then
     check_pass "gofmt is clean"
   else
@@ -40,6 +40,8 @@ verify_go() {
 
   check "go build ./..." -- go build ./...
   check "go vet ./..." -- go vet ./...
+  # The stub carries a build-ignore tag, so ./... never reaches it.
+  check "go vet the registry stub" -- go vet hack/thunder-registry-stub.go
   check "go test ./..." -- go test ./...
 }
 
@@ -160,7 +162,7 @@ verify_chart_quality() {
     fi
   done
 
-  if python3 -c "import json,sys; json.load(open('${CHART_MAIN}/values.schema.json'))" 2>/dev/null; then
+  if jq empty "${CHART_MAIN}/values.schema.json" 2>/dev/null; then
     check_pass "values.schema.json is valid JSON"
   else
     check_fail "values.schema.json is valid JSON"

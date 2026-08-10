@@ -65,7 +65,7 @@ fmt: ## Format Go sources
 
 .PHONY: fmt-check
 fmt-check: ## Fail if any Go source needs formatting
-	@unformatted="$$(gofmt -l ./cmd ./internal)"; \
+	@unformatted="$$(gofmt -l ./cmd ./internal hack/thunder-registry-stub.go)"; \
 	if [[ -n "$$unformatted" ]]; then \
 		echo "these files need gofmt:"; echo "$$unformatted"; exit 1; \
 	fi
@@ -74,6 +74,8 @@ fmt-check: ## Fail if any Go source needs formatting
 .PHONY: vet
 vet: ## Run go vet
 	$(GO) vet ./...
+	@# The registry stub carries a build-ignore tag, so ./... never reaches it.
+	$(GO) vet hack/thunder-registry-stub.go
 
 .PHONY: lint
 lint: fmt-check vet ## Run all static checks
@@ -168,7 +170,7 @@ helm-package: ## Package the chart as a .tgz
 
 .PHONY: helm-schema
 helm-schema: ## Check values.yaml validates against values.schema.json
-	@python3 -c "import json,sys; json.load(open('$(CHART)/values.schema.json'))" && echo "values.schema.json is valid JSON"
+	@jq empty $(CHART)/values.schema.json && echo "values.schema.json is valid JSON"
 	$(HELM) template schema-check $(CHART) >/dev/null
 	@echo "values.yaml validates against the schema"
 
