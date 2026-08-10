@@ -9,7 +9,7 @@ rules:
     resources: ["nodes"]
     verbs: ["get", "list", "watch"]
   - apiGroups: [""]
-    resources: ["configmaps", "secrets"]
+    resources: ["secrets"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   - apiGroups: ["resource.k8s.io"]
     resources: ["resourceslices"]

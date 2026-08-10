@@ -30,10 +30,7 @@ helm.sh/chart: {{ printf "%s-%s" .Chart.Name .Chart.Version | quote }}
 {{- printf "%s-claim" (include "thunder-gpu-test-vm.fullname" .) | trunc 253 | trimSuffix "-" -}}
 {{- end -}}
 
-{{- define "thunder-gpu-test-vm.guestConfigMapName" -}}
-{{- printf "%s-thunder-configmap" (include "thunder-gpu-test-vm.claimName" .) | trunc 253 | trimSuffix "-" -}}
-{{- end -}}
 
 {{- define "thunder-gpu-test-vm.guestSecretName" -}}
-{{- printf "%s-thunder-secret" (include "thunder-gpu-test-vm.claimName" .) | trunc 253 | trimSuffix "-" -}}
+{{- printf "%s-thunder-setup" (include "thunder-gpu-test-vm.claimName" .) | trunc 253 | trimSuffix "-" -}}
 {{- end -}}

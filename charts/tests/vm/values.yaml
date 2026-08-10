@@ -4,7 +4,6 @@ deviceClassPrefix: thunder-gpu-
 gpu:
   type: A6000
   count: 1
-  name: thunder-gpu0
 
 requestName: gpu
 claimName: gpu
@@ -38,8 +37,8 @@ cloudInit:
       - qemu-guest-agent
     runcmd:
       - [ systemctl, enable, --now, qemu-guest-agent ]
-      - [ sh, -lc, 'mkdir -p /mnt/thunder-config /mnt/thunder-secret' ]
-      - [ sh, -lc, 'for i in $(seq 1 60); do mountpoint -q /mnt/thunder-config || mount -t virtiofs thunder-config /mnt/thunder-config || true; mountpoint -q /mnt/thunder-secret || mount -t virtiofs thunder-secret /mnt/thunder-secret || true; if [ -f /mnt/thunder-config/install-thunder-client.sh ] && [ -s /mnt/thunder-secret/enrollment-token ]; then bash /mnt/thunder-config/install-thunder-client.sh; exit 0; fi; sleep 5; done; echo Thunder guest artifacts unavailable >&2; exit 1' ]
+      - [ sh, -lc, 'mkdir -p /mnt/thunder-setup' ]
+      - [ sh, -lc, 'for i in $(seq 1 60); do mountpoint -q /mnt/thunder-setup || mount -t virtiofs thunder-setup /mnt/thunder-setup || true; if [ -s /mnt/thunder-setup/install-thunder-client.sh ] && [ -s /mnt/thunder-setup/enrollment-token ]; then bash /mnt/thunder-setup/install-thunder-client.sh; exit 0; fi; sleep 5; done; echo Thunder guest artifacts unavailable >&2; exit 1' ]
       - [ sh, -lc, 'nvidia-smi || true' ]
 
 nodeSelector: {}

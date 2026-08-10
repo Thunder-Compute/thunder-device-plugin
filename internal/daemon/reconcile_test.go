@@ -101,8 +101,7 @@ func newTestReconciler(t *testing.T, runner *scriptedRunner) (*reconciler, *reco
 const healthyStatus = `{"healthy":true,"service":{"active":"active"}}`
 
 // A node whose thunderd was uninstalled reports exit 127 from `thunder status`.
-// That is the state the staging node was left in, and the daemon has to climb
-// out of it without a pod restart.
+// The daemon has to climb out of that without a pod restart.
 func TestReconcileReenrollsAfterThunderIsUninstalled(t *testing.T) {
 	runner := &scriptedRunner{statuses: []scriptedStatus{
 		{output: healthyStatus},

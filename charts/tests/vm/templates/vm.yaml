@@ -47,10 +47,6 @@ spec:
         cpu:
           cores: {{ .Values.vm.cpuCores }}
         devices:
-          gpus:
-            - name: {{ .Values.gpu.name | quote }}
-              claimName: {{ .Values.claimName | quote }}
-              requestName: {{ .Values.requestName | quote }}
           disks:
             - name: {{ include "thunder-gpu-test-vm.rootDiskName" . | quote }}
               disk:
@@ -59,9 +55,7 @@ spec:
               disk:
                 bus: virtio
           filesystems:
-            - name: thunder-config
-              virtiofs: {}
-            - name: thunder-secret
+            - name: thunder-setup
               virtiofs: {}
           {{- if .Values.network.enabled }}
           interfaces:
@@ -80,11 +74,7 @@ spec:
         - name: cloudinitdisk
           cloudInitNoCloud:
             userData: {{ .Values.cloudInit.userData | quote }}
-        - name: thunder-config
-          configMap:
-            name: {{ include "thunder-gpu-test-vm.guestConfigMapName" . | quote }}
-            optional: true
-        - name: thunder-secret
+        - name: thunder-setup
           secret:
             secretName: {{ include "thunder-gpu-test-vm.guestSecretName" . | quote }}
             optional: true

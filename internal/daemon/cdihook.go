@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"math/rand/v2"
 	"net/http"
 	"os"
@@ -336,7 +337,8 @@ func stageThunderClient(rootfs, libraryPath string, config ThunderClientConfig, 
 	if err := writeFileAtomic(filepath.Join(targetDir, thunderConfigFile), append(encoded, '\n'), 0o644); err != nil {
 		return fmt.Errorf("stage config.json into container: %w", err)
 	}
-	return stageCABundle(rootfs, caBundlePath)
+	stageCABundle(rootfs, caBundlePath)
+	return nil
 }
 
 // stageCABundle gives libthunder.so something to verify Thunder's certificate
@@ -344,28 +346,37 @@ func stageThunderClient(rootfs, libraryPath string, config ThunderClientConfig, 
 // all, and without one every call to the control plane fails inside the library
 // rather than anywhere the user can see.
 //
-// An image that has its own bundle keeps it: overwriting would silently
-// override a deliberate trust configuration.
-func stageCABundle(rootfs, caBundlePath string) error {
+// This is best effort, and deliberately so. An image that already has a trust
+// store keeps it, and an image whose /etc/ssl layout this cannot write into is
+// left alone rather than being refused a container. Failing here would block
+// the container from starting at all, which is far worse than a client that
+// cannot reach the control plane: it would take down workloads that never
+// wanted a GPU library in the first place, such as a KubeVirt virt-launcher,
+// where the guest installs its own client and this copy goes unused.
+func stageCABundle(rootfs, caBundlePath string) {
 	if strings.TrimSpace(caBundlePath) == "" {
 		caBundlePath = DefaultCABundlePath
 	}
 	target := filepath.Join(rootfs, DefaultCABundlePath)
-	if _, err := os.Stat(target); err == nil {
-		return nil
+
+	// Lstat, not Stat: a symlink counts as the image having its own trust
+	// configuration even when it dangles inside this rootfs. Stat follows the
+	// link, reports "missing", and sends us on to clobber it.
+	if _, err := os.Lstat(target); err == nil {
+		return
 	}
 	if _, err := os.Stat(caBundlePath); err != nil {
-		// No trust store on the node either. Say so against this container
-		// rather than letting the library fail with a curl error later.
-		return fmt.Errorf("container has no CA bundle and the node has none at %s: %w", caBundlePath, err)
+		return
 	}
+	// The parent may exist as a symlink or a file rather than a directory, in
+	// which case MkdirAll fails and the image keeps whatever it has.
 	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-		return fmt.Errorf("create CA bundle dir in container: %w", err)
+		log.Printf("not staging a CA bundle into the container: %v", err)
+		return
 	}
 	if err := copyFile(caBundlePath, target, 0o644); err != nil {
-		return fmt.Errorf("stage CA bundle into container: %w", err)
+		log.Printf("not staging a CA bundle into the container: %v", err)
 	}
-	return nil
 }
 
 func copyFile(source, target string, mode os.FileMode) error {
