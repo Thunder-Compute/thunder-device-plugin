@@ -509,6 +509,7 @@ Details in [`hack/README.md`](hack/README.md).
 | [`charts/tests`](charts/tests) | Pod and VM test charts |
 | [`containers/`](containers) | Multi-stage Dockerfiles |
 | [`hack/`](hack) | Verification and test scripts |
+| [`test/e2e`](test/e2e) | End-to-end tests against a live cluster |
 | [`Makefile`](Makefile) | Everything above |
 
 The Thunder API client is the external
