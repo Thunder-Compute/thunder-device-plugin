@@ -339,3 +339,70 @@ func TestReconcileLoopSurvivesFailuresAndStopsOnCancel(t *testing.T) {
 		t.Fatal("loop did not return after cancel")
 	}
 }
+
+// thunderd passes through stop-sigterm on its way back up, including right
+// after the daemon enrolls it. Reinstalling then restarts a service that was
+// already returning, which can loop: enroll, restart, enroll again.
+func TestReconcileWaitsOutASystemdTransition(t *testing.T) {
+	stopping := `{"healthy":false,"service":{"active":"deactivating","subState":"stop-sigterm"}}`
+	runner := &scriptedRunner{statuses: []scriptedStatus{
+		{output: healthyStatus},
+		{output: stopping}, {output: stopping}, {output: stopping},
+		{output: stopping}, {output: stopping}, {output: stopping},
+		{output: healthyStatus},
+	}}
+	reconciler, _ := newTestReconciler(t, runner)
+	ctx := context.Background()
+
+	for pass := 0; pass < 8; pass++ {
+		if err := reconciler.reconcile(ctx); err != nil {
+			t.Fatalf("reconcile pass %d: %v", pass, err)
+		}
+	}
+	if got := runner.enrollments(); got != 0 {
+		t.Fatalf("enrollments while thunderd was restarting = %d, want 0", got)
+	}
+	if reconciler.transitional != 0 {
+		t.Fatalf("transitional = %d after recovery, want 0", reconciler.transitional)
+	}
+}
+
+// A transition that never ends is as broken as a failed service, so the wait
+// is bounded rather than indefinite.
+func TestReconcileEnrollsAfterAStuckTransition(t *testing.T) {
+	runner := &scriptedRunner{statuses: []scriptedStatus{
+		{output: healthyStatus},
+		{output: `{"healthy":false,"service":{"active":"activating","subState":"start-pre"}}`},
+	}}
+	reconciler, _ := newTestReconciler(t, runner)
+	ctx := context.Background()
+
+	// One healthy pass, then the transition holds forever.
+	for pass := 0; pass < transitionalReconcileThreshold+unhealthyReconcileThreshold+1; pass++ {
+		if err := reconciler.reconcile(ctx); err != nil {
+			t.Fatalf("reconcile pass %d: %v", pass, err)
+		}
+	}
+	if got := runner.enrollments(); got != 1 {
+		t.Fatalf("enrollments after a stuck transition = %d, want 1", got)
+	}
+}
+
+// A failed service is not a transition and gets the normal short window.
+func TestReconcileReenrollsPromptlyOnAFailedService(t *testing.T) {
+	runner := &scriptedRunner{statuses: []scriptedStatus{
+		{output: healthyStatus},
+		{output: `{"healthy":false,"service":{"active":"failed","subState":"failed"}}`},
+	}}
+	reconciler, _ := newTestReconciler(t, runner)
+	ctx := context.Background()
+
+	for pass := 0; pass < 1+unhealthyReconcileThreshold; pass++ {
+		if err := reconciler.reconcile(ctx); err != nil {
+			t.Fatalf("reconcile pass %d: %v", pass, err)
+		}
+	}
+	if got := runner.enrollments(); got != 1 {
+		t.Fatalf("enrollments after a failed service = %d, want 1", got)
+	}
+}
