@@ -337,7 +337,9 @@ func TestRunEnrollsTheServerWithItsAdvertisedIPAndZone(t *testing.T) {
 	if install == "" {
 		t.Fatalf("the installer was never run; commands = %#v", runner.recordedCommands())
 	}
-	for _, want := range []string{"token-secret-server", "10.0.0.5", "us-west-2a", "node-a"} {
+	// THUNDERD_TRANSIENT is what makes the installer start thunderd as a
+	// systemd-run transient unit instead of writing a unit file to the node.
+	for _, want := range []string{"token-secret-server", "10.0.0.5", "us-west-2a", "node-a", "THUNDERD_TRANSIENT=1"} {
 		if !strings.Contains(install, want) {
 			t.Fatalf("install command missing %q:\n%s", want, install)
 		}

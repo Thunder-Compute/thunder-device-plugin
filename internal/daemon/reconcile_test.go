@@ -406,3 +406,20 @@ func TestReconcileReenrollsPromptlyOnAFailedService(t *testing.T) {
 		t.Fatalf("enrollments after a failed service = %d, want 1", got)
 	}
 }
+
+// The installer must be told to run thunderd as a transient unit, and a command
+// this cannot add that to must fail rather than quietly install a unit file.
+func TestWithTransientThunderd(t *testing.T) {
+	command, err := withTransientThunderd("curl -fsSL 'https://get.thundercompute.com/install.sh' | sudo THUNDER_INSTALL_MODE=thunderd sh")
+	if err != nil {
+		t.Fatalf("withTransientThunderd: %v", err)
+	}
+	want := "curl -fsSL 'https://get.thundercompute.com/install.sh' | sudo THUNDERD_TRANSIENT=1 THUNDER_INSTALL_MODE=thunderd sh"
+	if command != want {
+		t.Fatalf("command =\n%s\nwant\n%s", command, want)
+	}
+
+	if _, err := withTransientThunderd("curl -fsSL 'https://get.thundercompute.com/install.sh' | sh"); err == nil {
+		t.Fatal("withTransientThunderd accepted a command it could not add the setting to")
+	}
+}

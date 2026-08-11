@@ -223,18 +223,49 @@ func (r *reconciler) enroll(ctx context.Context, cfg Config) error {
 		return fmt.Errorf("create thunder node enrollment: %w", err)
 	}
 
-	command := r.client.ServerEnrollmentCommand(thunder.ServerEnrollmentCommandRequest{
+	command, err := withTransientThunderd(r.client.ServerEnrollmentCommand(thunder.ServerEnrollmentCommandRequest{
 		EnrollmentToken: token.EnrollmentToken,
 		IP:              cfg.AdvertisedIP,
 		Zone:            cfg.Zone,
 		ServerName:      cfg.Node,
-	})
+	}))
+	if err != nil {
+		return err
+	}
 	if err := r.runner.RunShell(ctx, command); err != nil {
 		return fmt.Errorf("run thunder node setup: %w", err)
 	}
 
 	log.Printf("thunder node setup completed: node=%s enrollmentTokenId=%s", cfg.Node, token.EnrollmentTokenID)
 	return nil
+}
+
+// thunderdTransientEnv makes the installer bring thunderd up as a systemd-run
+// transient unit rather than an installed unit file, which is what a node whose
+// /etc belongs to its image needs: nothing thunderd writes there survives a
+// reboot to be reconciled against.
+//
+// It is an environment variable rather than a flag because the installer ends
+// in `thunder up` and does not forward --transient to it. `thunder up` reads
+// the setting from its environment, and then persists it, so a node only has to
+// be told once.
+const thunderdTransientEnv = "THUNDERD_TRANSIENT=1"
+
+// withTransientThunderd adds that setting to the environment the SDK builds for
+// the installer.
+//
+// A command it does not recognise is an error rather than a command passed
+// through untouched: silently installing a unit file on a node that must not
+// have one is the failure this exists to prevent, and nothing downstream would
+// report it. The command carries a single-use enrollment token, so it is not
+// quoted back in the error.
+func withTransientThunderd(command string) (string, error) {
+	const sudo = "| sudo "
+	before, after, found := strings.Cut(command, sudo)
+	if !found {
+		return "", fmt.Errorf("thunder node setup command is not in the expected form, so %s could not be added to it", thunderdTransientEnv)
+	}
+	return before + sudo + thunderdTransientEnv + " " + after, nil
 }
 
 // ensureLibthunder pre-downloads the client library the CDI hook stages into
