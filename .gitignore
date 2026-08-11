@@ -23,3 +23,8 @@ cli/
 scripts/
 kubeconfig
 *.local.yaml
+
+# Environment-specific Helm overlays. A cluster's registry, endpoints and image
+# tags are deployment state, not source, and pinning them here would make every
+# deploy a commit.
+deploy/*-values.yaml
