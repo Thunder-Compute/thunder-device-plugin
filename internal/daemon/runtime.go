@@ -24,8 +24,12 @@ func run(ctx context.Context, cfg Config, runner commandRunner, nodes nodeInfoRe
 	log.Printf("starting thunder daemon %s (%s): node=%s",
 		version.Get(), version.Revision(), cfg.Node)
 
+	// The installer URL reaches the SDK, so the commands it builds — node
+	// enrollment and the guest client install — fetch from the same artifact
+	// host the daemon stages libthunder.so from.
 	client := thunder.NewClient(cfg.ThunderAPIURL, cfg.ThunderAPIToken,
-		thunder.WithUserAgent(version.UserAgent("daemon")))
+		thunder.WithUserAgent(version.UserAgent("daemon")),
+		thunder.WithInstallURL(cfg.ThunderInstallURL))
 
 	// Everything the node needs is driven by the reconcile loop rather than by
 	// a one-shot startup sequence, so the daemon recovers on its own when

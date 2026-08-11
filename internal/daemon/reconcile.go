@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	thunder "github.com/Thunder-Compute/thunder-sdk"
@@ -20,12 +21,26 @@ const (
 	ThunderReconcileMaxBackoff = 5 * time.Minute
 
 	// unhealthyReconcileThreshold is how many consecutive unhealthy checks it
-	// takes to re-enroll a node that was previously healthy. thunderd reports
-	// unhealthy while it restarts, and reinstalling underneath a restart would
-	// fight whoever is doing maintenance. A node that has never been healthy
-	// skips the wait, so a fresh node still enrolls on the first pass.
+	// takes to re-enroll a node that was previously healthy. A node that has
+	// never been healthy skips the wait, so a fresh node still enrolls on the
+	// first pass.
 	unhealthyReconcileThreshold = 3
+
+	// transitionalReconcileThreshold bounds how long thunderd may sit in a
+	// systemd transition before it counts as broken. Restarting and stopping
+	// are states thunderd passes through on its own — including immediately
+	// after the daemon enrolls it — and reinstalling on top of one restarts a
+	// service that was already coming back, which can loop.
+	transitionalReconcileThreshold = 30
 )
+
+// transitionalServiceStates are systemd states thunderd is moving through
+// rather than stuck in.
+var transitionalServiceStates = map[string]struct{}{
+	"activating":   {},
+	"deactivating": {},
+	"reloading":    {},
+}
 
 // reconciler drives one node towards the state the chart declares: enrolled
 // with Thunder in the zone its Kubernetes labels name, and serving the DRA
@@ -47,6 +62,7 @@ type reconciler struct {
 	pluginStarted  bool
 	everHealthy    bool
 	unhealthy      int
+	transitional   int
 	passes         int
 	libthunderPath string
 }
@@ -141,11 +157,23 @@ func (r *reconciler) ensureEnrolled(ctx context.Context, cfg Config) error {
 	}
 
 	if healthy {
-		if r.unhealthy > 0 {
-			log.Printf("thunder recovered on node %s after %d unhealthy check(s)", cfg.Node, r.unhealthy)
+		if r.unhealthy > 0 || r.transitional > 0 {
+			log.Printf("thunder recovered on node %s after %d unhealthy and %d transitional check(s)",
+				cfg.Node, r.unhealthy, r.transitional)
 		}
 		r.unhealthy = 0
+		r.transitional = 0
 		r.everHealthy = true
+		return nil
+	}
+
+	// A service that is starting or stopping is not a service that needs
+	// reinstalling. Wait for it to settle, but not forever: a transition that
+	// never ends is as broken as a service that failed.
+	if statusErr == nil && isTransitional(status) && r.transitional < transitionalReconcileThreshold {
+		r.transitional++
+		log.Printf("thunder is %s on node %s (%s); waiting for it to settle (%d/%d)",
+			status.Service.Active, cfg.Node, status.Service.SubState, r.transitional, transitionalReconcileThreshold)
 		return nil
 	}
 
@@ -168,7 +196,14 @@ func (r *reconciler) ensureEnrolled(ctx context.Context, cfg Config) error {
 	}
 	// Health is confirmed by the next pass rather than assumed here.
 	r.unhealthy = 0
+	r.transitional = 0
 	return nil
+}
+
+// isTransitional reports whether thunderd is mid-transition.
+func isTransitional(status thunderStatus) bool {
+	_, ok := transitionalServiceStates[strings.TrimSpace(status.Service.Active)]
+	return ok
 }
 
 // enroll runs the checks and the Thunder installer that put this node into its
