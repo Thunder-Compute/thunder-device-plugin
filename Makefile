@@ -188,6 +188,37 @@ test-local: ## Integration test on a throwaway local kind cluster
 preflight: ## Diagnose whether an existing cluster can run the driver (read-only)
 	hack/preflight.sh
 
+##@ End-to-end tests
+#
+# These run against the cluster your kubeconfig points at, which must already
+# have the chart installed. They allocate real GPUs and enrol real Thunder
+# clients. Point KUBECONFIG at the cluster under test.
+
+E2E_NAMESPACE        ?= thunder-e2e
+E2E_TIMEOUT          ?= 45m
+E2E_STRESS_DURATION  ?= 5m
+E2E_STRESS_WORKERS   ?= 6
+E2E_FLAGS            ?=
+
+E2E_TEST := $(GO) test -tags e2e -count=1 -v -timeout $(E2E_TIMEOUT) ./test/e2e/ \
+	-e2e.namespace=$(E2E_NAMESPACE) $(E2E_FLAGS)
+
+.PHONY: test-e2e
+test-e2e: ## Basic and VM end-to-end tests against the current cluster
+	$(E2E_TEST) -short
+
+.PHONY: test-e2e-stress
+test-e2e-stress: ## Stress the driver with concurrent claim churn (see E2E_STRESS_*)
+	$(E2E_TEST) -run TestStress \
+		-e2e.stress-duration=$(E2E_STRESS_DURATION) \
+		-e2e.stress-workers=$(E2E_STRESS_WORKERS)
+
+.PHONY: test-e2e-all
+test-e2e-all: ## Every end-to-end test, including the stress run
+	$(E2E_TEST) \
+		-e2e.stress-duration=$(E2E_STRESS_DURATION) \
+		-e2e.stress-workers=$(E2E_STRESS_WORKERS)
+
 .PHONY: check
 check: lint test verify ## Everything CI should run without a container runtime
 
