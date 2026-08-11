@@ -188,6 +188,18 @@ verify_chart_quality() {
   fi
 
   check_contains "chart renders a helm test hook" "helm.sh/hook: test" "${main_manifest}"
+
+  # A floating tag cannot be rolled back and an unqualified repository resolves
+  # to a different registry depending on the runtime, so neither may ship.
+  check_not_contains "no image is pinned to latest" ":latest" "${main_manifest}"
+
+  local app_version
+  app_version="$("${HELM}" show chart "${CHART_MAIN}" | awk '/^appVersion:/ {gsub(/"/, "", $2); print $2}')"
+  local component
+  for component in thunder-dra-operator thunder-device-plugin-daemon; do
+    check_contains "${component} defaults to the chart appVersion" \
+      "ghcr.io/thunder-compute/${component}:${app_version}" "${main_manifest}"
+  done
 }
 
 "${SKIP_GO}" || verify_go

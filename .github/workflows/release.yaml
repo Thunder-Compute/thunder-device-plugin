@@ -1,0 +1,127 @@
+# Promotion, not a build. A release re-tags the images of a candidate that has
+# already run in Thunder's cloud, so what customers install is the artifact that
+# was proven there rather than a fresh build of the same source.
+#
+# Run this from `main`, after fast-forwarding main onto the candidate's commit.
+name: release
+
+on:
+  workflow_dispatch:
+    inputs:
+      candidate:
+        description: "Candidate to promote, e.g. 0.2.0-rc.3"
+        required: true
+        type: string
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  packages: write
+  id-token: write
+
+env:
+  HELM_VERSION: v4.0.1
+  REGISTRY: ghcr.io/thunder-compute
+  CHART_REGISTRY: oci://ghcr.io/thunder-compute/charts
+
+jobs:
+  promote:
+    name: promote candidate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      # main only ever fast-forwards onto a candidate, so the candidate's tag
+      # must point at the tip of main. Anything else means the release would
+      # ship code that never ran in Thunder's cloud.
+      - id: version
+        env:
+          CANDIDATE: ${{ inputs.candidate }}
+        run: |
+          set -euo pipefail
+          [[ "${CANDIDATE}" =~ ^[0-9]+\.[0-9]+\.[0-9]+-rc\.[0-9]+$ ]] ||
+            { echo "candidate must look like 0.2.0-rc.3, got ${CANDIDATE}"; exit 1; }
+
+          candidate_sha="$(git rev-list -n1 "v${CANDIDATE}")"
+          main_sha="$(git rev-parse HEAD)"
+          if [[ "${candidate_sha}" != "${main_sha}" ]]; then
+            echo "v${CANDIDATE} is ${candidate_sha} but main is ${main_sha}."
+            echo "Fast-forward main onto the candidate before releasing."
+            exit 1
+          fi
+
+          version="${CANDIDATE%%-rc.*}"
+          expected="$(hack/release-version.sh main)"
+          [[ "${version}" == "${expected}" ]] ||
+            { echo "candidate says ${version}, Chart.yaml says ${expected}"; exit 1; }
+
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # imagetools create copies the manifest, so the release tag and the
+      # candidate tag resolve to one identical digest. The images are never
+      # rebuilt, and the existing cosign signature covers them both.
+      - name: Re-tag the candidate images
+        env:
+          CANDIDATE: ${{ inputs.candidate }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          for image in thunder-device-plugin-daemon thunder-dra-operator; do
+            docker buildx imagetools create \
+              --tag "${REGISTRY}/${image}:${VERSION}" \
+              "${REGISTRY}/${image}:${CANDIDATE}"
+          done
+
+      - name: Verify the release is the candidate
+        env:
+          CANDIDATE: ${{ inputs.candidate }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: make verify-promotion CANDIDATE="${CANDIDATE}" RELEASE_VERSION="${VERSION}"
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: ${{ env.HELM_VERSION }}
+
+      - name: Publish the chart
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          helm registry login ghcr.io \
+            --username "${{ github.actor }}" --password "${{ secrets.GITHUB_TOKEN }}"
+          make helm-push
+
+      - name: Tag the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CANDIDATE: ${{ inputs.candidate }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          {
+            echo "Promoted from \`v${CANDIDATE}\`, which ran in Thunder's own cloud."
+            echo "Identical image digests: the release is that candidate re-tagged, not a rebuild."
+            echo
+            echo '```bash'
+            echo "helm install thunder-device-plugin \\"
+            echo "  oci://ghcr.io/thunder-compute/charts/thunder-device-plugin --version ${VERSION}"
+            echo '```'
+            echo
+            echo "Changes: https://github.com/${GITHUB_REPOSITORY}/compare/v${CANDIDATE}...v${VERSION}"
+          } > notes.md
+          gh release create "v${VERSION}" \
+            --target "${GITHUB_SHA}" \
+            --title "v${VERSION}" \
+            --notes-file notes.md

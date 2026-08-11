@@ -1,0 +1,22 @@
+version: 2
+updates:
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+    target-branch: next
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    target-branch: next
+
+  - package-ecosystem: docker
+    directories:
+      - /containers/daemon
+      - /containers/operator
+    schedule:
+      interval: weekly
+    target-branch: next

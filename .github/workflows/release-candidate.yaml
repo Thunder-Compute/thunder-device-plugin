@@ -1,0 +1,114 @@
+# Every commit on `next` becomes a release candidate: images, chart and a
+# prerelease tag. Thunder's own clusters run these before main moves, so a
+# candidate is a real artifact, never a preview build.
+name: release-candidate
+
+on:
+  push:
+    branches: [next]
+  workflow_dispatch:
+
+concurrency:
+  group: release-candidate
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  packages: write
+  id-token: write
+
+env:
+  HELM_VERSION: v4.0.1
+  REGISTRY: ghcr.io/thunder-compute
+  CHART_REGISTRY: oci://ghcr.io/thunder-compute/charts
+
+jobs:
+  publish:
+    name: publish candidate
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      # Candidates are numbered by distance from main, so the full history and
+      # the main ref both have to be present.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - id: version
+        run: echo "version=$(hack/release-version.sh)" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: daemon
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: containers/daemon/Dockerfile
+          push: true
+          platforms: linux/amd64
+          provenance: true
+          sbom: true
+          build-args: |
+            VERSION=${{ steps.version.outputs.version }}
+            COMMIT=${{ github.sha }}
+          tags: ${{ env.REGISTRY }}/thunder-device-plugin-daemon:${{ steps.version.outputs.version }}
+
+      - id: operator
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: containers/operator/Dockerfile
+          push: true
+          platforms: linux/amd64
+          provenance: true
+          sbom: true
+          build-args: |
+            VERSION=${{ steps.version.outputs.version }}
+            COMMIT=${{ github.sha }}
+          tags: ${{ env.REGISTRY }}/thunder-dra-operator:${{ steps.version.outputs.version }}
+
+      - uses: sigstore/cosign-installer@v3
+      - name: Sign the images
+        run: |
+          cosign sign --yes \
+            "${REGISTRY}/thunder-device-plugin-daemon@${{ steps.daemon.outputs.digest }}"
+          cosign sign --yes \
+            "${REGISTRY}/thunder-dra-operator@${{ steps.operator.outputs.digest }}"
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: ${{ env.HELM_VERSION }}
+
+      # The chart's appVersion is the candidate version, and the chart leaves
+      # image tags empty, so the chart version alone decides what runs.
+      - name: Publish the chart
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          helm registry login ghcr.io \
+            --username "${{ github.actor }}" --password "${{ secrets.GITHUB_TOKEN }}"
+          make helm-push
+
+      - name: Tag the candidate
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          {
+            echo "Release candidate built from \`next\`."
+            echo
+            echo "Pin it in thundernetes (\`infra/manifest/values-staging.yaml\`) to run it in"
+            echo "Thunder's cloud. It becomes a release only after it has run there."
+          } > notes.md
+          gh release create "v${VERSION}" \
+            --prerelease \
+            --target "${GITHUB_SHA}" \
+            --title "v${VERSION}" \
+            --notes-file notes.md

@@ -1,0 +1,36 @@
+# Contributing
+
+## Where changes go
+
+Pull requests target **`next`**, never `main`. `main` is the released line and
+only ever fast-forwards onto a candidate that has already run in Thunder
+Compute's own cloud — see [docs/RELEASING.md](docs/RELEASING.md).
+
+## Before opening a pull request
+
+```bash
+make check       # gofmt, vet, unit tests, chart render and packaging checks
+make test-local  # full install on a throwaway kind cluster; no GPU needed
+```
+
+CI runs both on every pull request.
+
+## Chart changes
+
+- Every value needs a `# --` doc comment in `values.yaml`, an entry in
+  `values.schema.json`, and a default that is safe for a stranger's cluster.
+  The schema rejects unknown keys, so a value that is not in it cannot be set.
+- Never make the chart create the Thunder API token Secret. It takes the name
+  of an existing one, so a token cannot end up in a release history.
+- Image tags stay empty in `values.yaml`. They follow `appVersion`, which is
+  what makes a chart version pin the whole install.
+- Do not add anything that only makes sense inside Thunder's cloud. Thunder's
+  own deployment is a plain values overlay in `thundernetes`
+  (`infra/thunder-device-plugin/`), and it has to stay that way: if our cloud
+  needs something the chart cannot express, that is a missing chart value.
+
+## Versioning
+
+`Chart.yaml` carries the version being cooked. Bump it when a release goes out,
+not while working on one, and never hand-edit it to a candidate version —
+`hack/release-version.sh` derives those.
