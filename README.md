@@ -246,7 +246,6 @@ spec:
         - name: thunder-setup
           secret:
             secretName: thunder-vm-claim-thunder-setup
-            optional: true
         - name: cloudinitdisk
           cloudInitNoCloud:
             userData: |

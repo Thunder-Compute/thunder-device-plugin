@@ -77,7 +77,6 @@ spec:
         - name: thunder-setup
           secret:
             secretName: {{ include "thunder-gpu-test-vm.guestSecretName" . | quote }}
-            optional: true
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
