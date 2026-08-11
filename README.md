@@ -511,13 +511,10 @@ Details in [`hack/README.md`](hack/README.md).
 ## Releases
 
 Every release is a **promotion**, not a build. Changes land on `next`, which
-publishes a release candidate; Thunder Compute runs that candidate in its own
-production cloud; only then does `main` fast-forward onto it and the release get
-tagged. The images customers pull are the candidate's images re-tagged, byte for
-byte — never a rebuild of the same source.
-
-So a released version is one that has already served real GPU workloads before
-it reached you.
+stages the next release and publishes a release candidate. Once that candidate
+is ready, `main` fast-forwards onto it and the release is tagged. The images you
+pull are the candidate's images re-tagged, byte for byte — never a rebuild of
+the same source, so a released version is one that has already run as-is.
 
 Images and charts are signed with cosign and carry SBOM and provenance
 attestations — see [SECURITY.md](SECURITY.md) to verify them.

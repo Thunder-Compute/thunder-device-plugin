@@ -1,25 +1,25 @@
 # Releasing
 
-Thunder Compute runs this chart in its own cloud before anyone else gets it.
-That is the whole point of the branch layout: a release is not a build, it is a
-**promotion** of something that already ran in production.
+A release is a **promotion**, not a build. Work is staged on `next` until it is
+ready, and `main` moves onto it — the images published as a release are the
+staged images re-tagged, byte for byte, never a rebuild.
 
 ```
 next  ──●──●──●──●─────────  candidates: 0.2.0-rc.1, -rc.2, -rc.3 …
-         └── main ──────●     fast-forwarded onto a proven candidate, tagged v0.2.0
+         └── main ──────●     fast-forwarded onto a ready candidate, tagged v0.2.0
 ```
 
 ## The two branches
 
 | Branch | What it means |
 | --- | --- |
-| `next` | Integration. Every commit publishes a release candidate. |
-| `main` | What customers get. Only ever fast-forwarded onto a candidate that has already run in Thunder's cloud. |
+| `next` | The next release, staged. Every commit publishes a release candidate. |
+| `main` | The live release. Only ever fast-forwarded onto a candidate. |
 
 Every pull request targets `next`. Nothing is ever pushed to `main` directly —
 not a hotfix, not a docs typo. Because `main` only fast-forwards, the two
 branches can never diverge, so there is no cherry-picking and no merge to get
-wrong: the commit customers run is the identical commit Thunder ran.
+wrong: what is released is the identical commit that was staged.
 
 ## Versions
 
@@ -45,15 +45,11 @@ is no second knob to keep in sync.
    chart to `oci://ghcr.io/thunder-compute/charts`, and cuts a prerelease
    `v0.2.0-rc.N`.
 
-2. **Bake in staging.** In thundernetes, set `chartRevision` for the
-   `thunder-device-plugin` app in `infra/manifest/values-staging.yaml` to the
-   new tag.
+2. **Run the candidate.** Install it wherever the release is validated. A
+   candidate is a real, immutable artifact, so whatever is tested is exactly
+   what a release would ship.
 
-3. **Bake in production.** Move the same tag into `infra/manifest/values.yaml`
-   and let it flow through the usual `main` → `giga-prod` promotion.
-
-4. **Fast-forward `main`.** Once the candidate has run in production long
-   enough to trust:
+3. **Fast-forward `main`** once the candidate is ready:
 
    ```bash
    git push origin v0.2.0-rc.3^{commit}:main
@@ -62,22 +58,21 @@ is no second knob to keep in sync.
    This fails if it is not a fast-forward, which is exactly the protection
    wanted.
 
-5. **Release.** Run the `release` workflow from `main` with the candidate
+4. **Release.** Run the `release` workflow from `main` with the candidate
    version as input. It re-tags the candidate's image manifests — no rebuild —
    publishes the chart at the release version, verifies the digests match, and
    cuts `v0.2.0`.
 
-6. **Flip the production pin** in thundernetes from `v0.2.0-rc.3` to `v0.2.0`.
-   **This sync must be a no-op.** Same digests, so nothing but the image tag
-   strings move. If Argo shows anything more, the released artifact is not the
-   one that baked, and the release is wrong.
+5. **Bump `Chart.yaml`** on `next` to the next version.
 
-7. **Bump `Chart.yaml`** on `next` to the next version.
+Anyone pinned to the candidate can move to the release and see nothing change
+but the image tag strings. Anything more means the release is not the artifact
+that was staged, and the promotion is wrong.
 
 ## Hotfixes
 
-Land on `next`, take a candidate, give it a short bake, then fast-forward.
-Shipping a fix straight to `main` skips the only evidence that it works.
+Land on `next`, take a candidate, validate it, then fast-forward. Shipping a
+fix straight to `main` skips the only evidence that it works.
 
 ## Checking a release by hand
 

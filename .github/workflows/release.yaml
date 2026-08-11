@@ -1,6 +1,6 @@
-# Promotion, not a build. A release re-tags the images of a candidate that has
-# already run in Thunder's cloud, so what customers install is the artifact that
-# was proven there rather than a fresh build of the same source.
+# Promotion, not a build. A release re-tags the images of a candidate that was
+# already staged on `next`, so what is installed is that exact artifact rather
+# than a fresh build of the same source.
 #
 # Run this from `main`, after fast-forwarding main onto the candidate's commit.
 name: release
@@ -39,7 +39,7 @@ jobs:
 
       # main only ever fast-forwards onto a candidate, so the candidate's tag
       # must point at the tip of main. Anything else means the release would
-      # ship code that never ran in Thunder's cloud.
+      # ship code that was never staged as a candidate.
       - id: version
         env:
           CANDIDATE: ${{ inputs.candidate }}
@@ -111,7 +111,7 @@ jobs:
         run: |
           set -euo pipefail
           {
-            echo "Promoted from \`v${CANDIDATE}\`, which ran in Thunder's own cloud."
+            echo "Promoted from \`v${CANDIDATE}\`."
             echo "Identical image digests: the release is that candidate re-tagged, not a rebuild."
             echo
             echo '```bash'

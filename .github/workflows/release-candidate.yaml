@@ -1,6 +1,6 @@
 # Every commit on `next` becomes a release candidate: images, chart and a
-# prerelease tag. Thunder's own clusters run these before main moves, so a
-# candidate is a real artifact, never a preview build.
+# prerelease tag. A candidate is a real, immutable artifact that a release
+# re-tags rather than rebuilds, never a preview build.
 name: release-candidate
 
 on:
@@ -102,10 +102,10 @@ jobs:
         run: |
           set -euo pipefail
           {
-            echo "Release candidate built from \`next\`."
+            echo "Release candidate staged on \`next\`."
             echo
-            echo "Pin it in thundernetes (\`infra/manifest/values-staging.yaml\`) to run it in"
-            echo "Thunder's cloud. It becomes a release only after it has run there."
+            echo "A release re-tags these images rather than rebuilding them, so whatever"
+            echo "this candidate does is what the release will do."
           } > notes.md
           gh release create "v${VERSION}" \
             --prerelease \

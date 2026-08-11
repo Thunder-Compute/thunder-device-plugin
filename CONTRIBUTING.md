@@ -2,9 +2,9 @@
 
 ## Where changes go
 
-Pull requests target **`next`**, never `main`. `main` is the released line and
-only ever fast-forwards onto a candidate that has already run in Thunder
-Compute's own cloud — see [docs/RELEASING.md](docs/RELEASING.md).
+Pull requests target **`next`**, which stages the next release. `main` is the
+live release and only ever fast-forwards onto a candidate — see
+[docs/RELEASING.md](docs/RELEASING.md).
 
 ## Before opening a pull request
 
@@ -24,10 +24,10 @@ CI runs both on every pull request.
   of an existing one, so a token cannot end up in a release history.
 - Image tags stay empty in `values.yaml`. They follow `appVersion`, which is
   what makes a chart version pin the whole install.
-- Do not add anything that only makes sense inside Thunder's cloud. Thunder's
-  own deployment is a plain values overlay in `thundernetes`
-  (`infra/thunder-device-plugin/`), and it has to stay that way: if our cloud
-  needs something the chart cannot express, that is a missing chart value.
+- Do not add anything that only makes sense in one particular cluster. Every
+  deployment should be a plain values overlay on top of this chart, ours
+  included. If a cluster needs something the chart cannot express, that is a
+  missing chart value, not a reason to carry a private variant.
 
 ## Versioning
 
