@@ -7,7 +7,9 @@ import (
 	"path/filepath"
 	"strings"
 
-	thunder "thunder-device-plugin/pkg/thunder-sdk"
+	thunder "github.com/Thunder-Compute/thunder-sdk"
+
+	"github.com/Thunder-Compute/thunder-device-plugin/internal/version"
 
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
@@ -15,66 +17,31 @@ import (
 )
 
 func Run(ctx context.Context, cfg Config) error {
-	return run(ctx, cfg, osCommandRunner{targetPID: cfg.HostTargetPID}, kubernetesNodeLabelReader{})
+	return run(ctx, cfg, osCommandRunner{targetPID: cfg.HostTargetPID}, kubernetesNodeInfoReader{})
 }
 
-func run(ctx context.Context, cfg Config, runner commandRunner, labels nodeLabelReader) error {
-	var err error
-	cfg, err = resolveNodeAttributes(ctx, cfg, labels)
-	if err != nil {
-		return err
-	}
-	log.Printf("registering thunder daemon on kubernetes node %s in zone %s", cfg.Node, cfg.Zone)
+func run(ctx context.Context, cfg Config, runner commandRunner, nodes nodeInfoReader) error {
+	log.Printf("starting thunder daemon %s (%s): node=%s",
+		version.Get(), version.Revision(), cfg.Node)
 
-	client := thunder.NewClient(cfg.ThunderAPIURL, cfg.ThunderAPIToken)
-	zoneID, err := ensureThunderZone(ctx, client, cfg.Zone)
-	if err != nil {
-		return err
-	}
-	log.Printf("resolved thunder zone: kubernetesZone=%s thunderZoneId=%s", cfg.Zone, zoneID)
+	// The installer URL reaches the SDK, so the commands it builds — node
+	// enrollment and the guest client install — fetch from the same artifact
+	// host the daemon stages libthunder.so from.
+	client := thunder.NewClient(cfg.ThunderAPIURL, cfg.ThunderAPIToken,
+		thunder.WithUserAgent(version.UserAgent("daemon")),
+		thunder.WithInstallURL(cfg.ThunderInstallURL))
 
-	status, err := getThunderStatus(ctx, runner)
-	if err != nil {
-		log.Printf("thunder status unavailable before setup: %v", err)
-	} else {
-		logThunderStatus("initial", status)
-		if status.Healthy {
-			log.Printf("thunder is already healthy on node %s; skipping enrollment and installer", cfg.Node)
-			if err := startDRAPlugin(ctx, cfg, client, zoneID); err != nil {
-				return err
-			}
-			return monitorThunderStatus(ctx, runner, ThunderStatusInterval)
-		}
+	// Everything the node needs is driven by the reconcile loop rather than by
+	// a one-shot startup sequence, so the daemon recovers on its own when
+	// thunderd is removed, reinstalled or restarted underneath it.
+	reconciler := &reconciler{
+		cfg:         cfg,
+		runner:      runner,
+		nodes:       nodes,
+		client:      client,
+		startPlugin: startDRAPlugin,
 	}
-
-	gpuCount, driverVersion, err := nvidiaChecks(ctx, cfg, runner)
-	if err != nil {
-		return err
-	}
-	log.Printf("nvidia checks passed: driver=%s physical_gpus=%d", driverVersion, gpuCount)
-
-	token, err := client.CreateNodeEnrollment(ctx, thunder.CreateNodeEnrollmentRequest{
-		ZoneID: zoneID,
-	})
-	if err != nil {
-		return fmt.Errorf("create thunder node enrollment: %w", err)
-	}
-
-	command := client.NodeEnrollmentCommand(thunder.NodeEnrollmentCommandRequest{
-		EnrollmentToken: token.EnrollmentToken,
-		IP:              cfg.ExternalIP,
-		Zone:            cfg.Zone,
-		NodeName:        cfg.Node,
-	})
-	if err := runner.RunShell(ctx, command); err != nil {
-		return fmt.Errorf("run thunder node setup: %w", err)
-	}
-
-	log.Printf("thunder node setup completed: node=%s enrollmentTokenId=%s", cfg.Node, token.EnrollmentTokenID)
-	if err := startDRAPlugin(ctx, cfg, client, zoneID); err != nil {
-		return err
-	}
-	return monitorThunderStatus(ctx, runner, ThunderStatusInterval)
+	return reconciler.loop(ctx, ThunderReconcileInterval, ThunderReconcileMaxBackoff)
 }
 
 func startDRAPlugin(ctx context.Context, cfg Config, thunderClient *thunder.Client, zoneID string) error {
@@ -102,6 +69,22 @@ func startDRAPlugin(ctx context.Context, cfg Config, thunderClient *thunder.Clie
 	cdiStore.ClientInstallCommand = thunderClient.ClientEnrollmentCommandFor(thunder.ClientEnrollmentCommandRequest{
 		EnrollmentTokenEnv: ThunderEnrollmentTokenEnv,
 	})
+	// The CDI hook sets a container up with the Thunder client. Without it a
+	// workload would preload a library its image was never expected to carry.
+	hookPath, err := StageHookBinary(cfg.KubeletPluginDir)
+	if err != nil {
+		return err
+	}
+	cdiStore.HookPath = hookPath
+	cdiStore.CacheDir = cfg.KubeletPluginDir
+	cdiStore.CentralURL = cfg.ThunderAPIURL
+	cdiStore.TelemetryURL = cfg.ThunderTelemetryURL
+	cdiStore.InstallURL = cfg.ThunderInstallURL
+	cdiStore.ArtifactBaseURL = cfg.ArtifactBaseURL
+	cdiStore.LibthunderURL = cfg.LibthunderURL
+	cdiStore.LibthunderSHA256 = cfg.LibthunderSHA256
+	cdiStore.CABundlePath = cfg.CABundlePath
+	log.Printf("staged CDI hook: path=%s cacheDir=%s", hookPath, cfg.KubeletPluginDir)
 
 	driver := &Driver{
 		DriverName: cfg.DRADriverName,
@@ -128,25 +111,28 @@ func startDRAPlugin(ctx context.Context, cfg Config, thunderClient *thunder.Clie
 	return nil
 }
 
-func resolveNodeAttributes(ctx context.Context, cfg Config, labels nodeLabelReader) (Config, error) {
-	if cfg.Zone != "" && cfg.ExternalIP != "" {
+// resolveNodeAttributes fills in the zone and advertised IP that were not set
+// through the environment. The zone falls back to a node label; the advertised
+// IP falls back to a node label and then to the node's own IP.
+func resolveNodeAttributes(ctx context.Context, cfg Config, nodes nodeInfoReader) (Config, error) {
+	if cfg.Zone != "" && cfg.AdvertisedIP != "" {
 		return cfg, nil
 	}
 
-	nodeLabels, err := labels.Labels(ctx, cfg.Node)
+	node, err := nodes.Node(ctx, cfg.Node)
 	if err != nil {
-		return Config{}, fmt.Errorf("read labels for node %s: %w", cfg.Node, err)
+		return Config{}, fmt.Errorf("read kubernetes node %s: %w", cfg.Node, err)
 	}
 	if cfg.Zone == "" {
-		cfg.Zone = strings.TrimSpace(nodeLabels[cfg.ZoneLabel])
+		cfg.Zone = strings.TrimSpace(node.Labels[cfg.ZoneLabel])
 		if cfg.Zone == "" {
 			return Config{}, fmt.Errorf("%s must be specified or node %s must have label %s", EnvZone, cfg.Node, cfg.ZoneLabel)
 		}
 	}
-	if cfg.ExternalIP == "" {
-		cfg.ExternalIP = strings.TrimSpace(nodeLabels[cfg.ExternalIPLabel])
-		if cfg.ExternalIP == "" {
-			return Config{}, fmt.Errorf("%s must be specified or node %s must have label %s", EnvExternalIP, cfg.Node, cfg.ExternalIPLabel)
+	if cfg.AdvertisedIP == "" {
+		cfg.AdvertisedIP = firstNonEmpty(node.Labels[cfg.AdvertisedIPLabel], node.NodeIP())
+		if cfg.AdvertisedIP == "" {
+			return Config{}, fmt.Errorf("%s must be specified, or node %s must have label %s or an IP address in status.addresses", EnvAdvertisedIP, cfg.Node, cfg.AdvertisedIPLabel)
 		}
 	}
 	return cfg, nil

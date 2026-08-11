@@ -1,5 +1,30 @@
-cli/
-*.md
-!README.md
+# Build output
+bin/
+dist/
 .build/
+
+# Go
+*.test
+*.out
+coverage.*
+
+# Helm
+*.tgz
+charts/**/charts/
+
+# Editor and OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Local development
+cli/
 scripts/
+kubeconfig
+*.local.yaml
+
+# Environment-specific Helm overlays. A cluster's registry, endpoints and image
+# tags are deployment state, not source, and pinning them here would make every
+# deploy a commit.
+deploy/*-values.yaml

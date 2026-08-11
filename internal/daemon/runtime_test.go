@@ -8,16 +8,17 @@ import (
 	"os"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 
-	thunder "thunder-device-plugin/pkg/thunder-sdk"
+	thunder "github.com/Thunder-Compute/thunder-sdk"
 )
 
 func TestConfigFromLookup(t *testing.T) {
 	env := map[string]string{
 		EnvNode:               "node-a",
 		EnvZone:               "us-east-1a",
-		EnvExternalIP:         "203.0.113.10",
+		EnvAdvertisedIP:       "203.0.113.10",
 		EnvMinNVDriverVersion: "535.104.05",
 		EnvThunderAPIToken:    "token",
 	}
@@ -33,8 +34,8 @@ func TestConfigFromLookup(t *testing.T) {
 	if cfg.Zone != "us-east-1a" {
 		t.Fatalf("Zone = %q, want us-east-1a", cfg.Zone)
 	}
-	if cfg.ExternalIP != "203.0.113.10" {
-		t.Fatalf("ExternalIP = %q, want 203.0.113.10", cfg.ExternalIP)
+	if cfg.AdvertisedIP != "203.0.113.10" {
+		t.Fatalf("AdvertisedIP = %q, want 203.0.113.10", cfg.AdvertisedIP)
 	}
 	if cfg.HostRoot != DefaultHostRoot {
 		t.Fatalf("HostRoot = %q, want %q", cfg.HostRoot, DefaultHostRoot)
@@ -55,26 +56,29 @@ func TestConfigFromLookupAllowsNodeLabelFallbacks(t *testing.T) {
 	if cfg.Zone != "" {
 		t.Fatalf("Zone = %q, want empty", cfg.Zone)
 	}
-	if cfg.ExternalIP != "" {
-		t.Fatalf("ExternalIP = %q, want empty", cfg.ExternalIP)
+	if cfg.AdvertisedIP != "" {
+		t.Fatalf("AdvertisedIP = %q, want empty", cfg.AdvertisedIP)
 	}
 	if cfg.ZoneLabel != DefaultZoneLabel {
 		t.Fatalf("ZoneLabel = %q, want %q", cfg.ZoneLabel, DefaultZoneLabel)
 	}
-	if cfg.ExternalIPLabel != DefaultExternalIPLabel {
-		t.Fatalf("ExternalIPLabel = %q, want %q", cfg.ExternalIPLabel, DefaultExternalIPLabel)
+	if cfg.AdvertisedIPLabel != DefaultAdvertisedIPLabel {
+		t.Fatalf("AdvertisedIPLabel = %q, want %q", cfg.AdvertisedIPLabel, DefaultAdvertisedIPLabel)
 	}
 }
 
 func TestResolveNodeAttributesFromLabels(t *testing.T) {
 	cfg := Config{
-		Node:            "node-a",
-		ZoneLabel:       DefaultZoneLabel,
-		ExternalIPLabel: DefaultExternalIPLabel,
+		Node:              "node-a",
+		ZoneLabel:         DefaultZoneLabel,
+		AdvertisedIPLabel: DefaultAdvertisedIPLabel,
 	}
-	reader := &fakeNodeLabelReader{labels: map[string]string{
-		DefaultZoneLabel:       "us-east-1a",
-		DefaultExternalIPLabel: "203.0.113.10",
+	reader := &fakeNodeInfoReader{node: NodeInfo{
+		Labels: map[string]string{
+			DefaultZoneLabel:         "us-east-1a",
+			DefaultAdvertisedIPLabel: "203.0.113.10",
+		},
+		InternalIP: "10.0.0.5",
 	}}
 
 	cfg, err := resolveNodeAttributes(context.Background(), cfg, reader)
@@ -84,25 +88,104 @@ func TestResolveNodeAttributesFromLabels(t *testing.T) {
 	if cfg.Zone != "us-east-1a" {
 		t.Fatalf("Zone = %q, want us-east-1a", cfg.Zone)
 	}
-	if cfg.ExternalIP != "203.0.113.10" {
-		t.Fatalf("ExternalIP = %q, want 203.0.113.10", cfg.ExternalIP)
+	if cfg.AdvertisedIP != "203.0.113.10" {
+		t.Fatalf("AdvertisedIP = %q, want 203.0.113.10", cfg.AdvertisedIP)
 	}
 	if reader.nodeName != "node-a" {
 		t.Fatalf("nodeName = %q, want node-a", reader.nodeName)
 	}
 }
 
+func TestResolveNodeAttributesDefaultsAdvertisedIPToNodeIP(t *testing.T) {
+	tests := []struct {
+		name string
+		node NodeInfo
+		want string
+	}{
+		{
+			name: "internal ip",
+			node: NodeInfo{InternalIP: "10.0.0.5", ExternalIP: "203.0.113.10"},
+			want: "10.0.0.5",
+		},
+		{
+			name: "external ip when no internal ip",
+			node: NodeInfo{ExternalIP: "203.0.113.10"},
+			want: "203.0.113.10",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			node := test.node
+			node.Labels = map[string]string{DefaultZoneLabel: "us-east-1a"}
+			cfg := Config{
+				Node:              "node-a",
+				ZoneLabel:         DefaultZoneLabel,
+				AdvertisedIPLabel: DefaultAdvertisedIPLabel,
+			}
+
+			cfg, err := resolveNodeAttributes(context.Background(), cfg, &fakeNodeInfoReader{node: node})
+			if err != nil {
+				t.Fatalf("resolveNodeAttributes: %v", err)
+			}
+			if cfg.AdvertisedIP != test.want {
+				t.Fatalf("AdvertisedIP = %q, want %q", cfg.AdvertisedIP, test.want)
+			}
+		})
+	}
+}
+
+func TestResolveNodeAttributesPrefersLabelOverNodeIP(t *testing.T) {
+	cfg := Config{
+		Node:              "node-a",
+		ZoneLabel:         DefaultZoneLabel,
+		AdvertisedIPLabel: DefaultAdvertisedIPLabel,
+	}
+	reader := &fakeNodeInfoReader{node: NodeInfo{
+		Labels: map[string]string{
+			DefaultZoneLabel:         "us-east-1a",
+			DefaultAdvertisedIPLabel: "198.51.100.7",
+		},
+		InternalIP: "10.0.0.5",
+	}}
+
+	cfg, err := resolveNodeAttributes(context.Background(), cfg, reader)
+	if err != nil {
+		t.Fatalf("resolveNodeAttributes: %v", err)
+	}
+	if cfg.AdvertisedIP != "198.51.100.7" {
+		t.Fatalf("AdvertisedIP = %q, want 198.51.100.7", cfg.AdvertisedIP)
+	}
+}
+
+func TestResolveNodeAttributesRequiresAnAdvertisableIP(t *testing.T) {
+	cfg := Config{
+		Node:              "node-a",
+		ZoneLabel:         DefaultZoneLabel,
+		AdvertisedIPLabel: DefaultAdvertisedIPLabel,
+	}
+	reader := &fakeNodeInfoReader{node: NodeInfo{
+		Labels: map[string]string{DefaultZoneLabel: "us-east-1a"},
+	}}
+
+	if _, err := resolveNodeAttributes(context.Background(), cfg, reader); err == nil {
+		t.Fatal("resolveNodeAttributes succeeded without any advertisable IP")
+	}
+}
+
 func TestResolveNodeAttributesKeepsEnvOverrides(t *testing.T) {
 	cfg := Config{
-		Node:            "node-a",
-		Zone:            "env-zone",
-		ExternalIP:      "203.0.113.20",
-		ZoneLabel:       DefaultZoneLabel,
-		ExternalIPLabel: DefaultExternalIPLabel,
+		Node:              "node-a",
+		Zone:              "env-zone",
+		AdvertisedIP:      "203.0.113.20",
+		ZoneLabel:         DefaultZoneLabel,
+		AdvertisedIPLabel: DefaultAdvertisedIPLabel,
 	}
-	reader := &fakeNodeLabelReader{labels: map[string]string{
-		DefaultZoneLabel:       "label-zone",
-		DefaultExternalIPLabel: "203.0.113.10",
+	reader := &fakeNodeInfoReader{node: NodeInfo{
+		Labels: map[string]string{
+			DefaultZoneLabel:         "label-zone",
+			DefaultAdvertisedIPLabel: "203.0.113.10",
+		},
 	}}
 
 	cfg, err := resolveNodeAttributes(context.Background(), cfg, reader)
@@ -112,11 +195,40 @@ func TestResolveNodeAttributesKeepsEnvOverrides(t *testing.T) {
 	if cfg.Zone != "env-zone" {
 		t.Fatalf("Zone = %q, want env-zone", cfg.Zone)
 	}
-	if cfg.ExternalIP != "203.0.113.20" {
-		t.Fatalf("ExternalIP = %q, want 203.0.113.20", cfg.ExternalIP)
+	if cfg.AdvertisedIP != "203.0.113.20" {
+		t.Fatalf("AdvertisedIP = %q, want 203.0.113.20", cfg.AdvertisedIP)
 	}
 	if reader.nodeName != "" {
-		t.Fatalf("label reader was called with %q", reader.nodeName)
+		t.Fatalf("node reader was called with %q", reader.nodeName)
+	}
+}
+
+func TestDecodeNodeInfo(t *testing.T) {
+	body := []byte(`{
+		"metadata": {"labels": {"topology.kubernetes.io/zone": "us-east-1a"}},
+		"status": {"addresses": [
+			{"type": "Hostname", "address": "node-a"},
+			{"type": "InternalIP", "address": "10.0.0.5"},
+			{"type": "InternalIP", "address": "10.0.0.6"},
+			{"type": "ExternalIP", "address": "203.0.113.10"}
+		]}
+	}`)
+
+	info, err := decodeNodeInfo(body)
+	if err != nil {
+		t.Fatalf("decodeNodeInfo: %v", err)
+	}
+	if info.Labels["topology.kubernetes.io/zone"] != "us-east-1a" {
+		t.Fatalf("Labels = %#v", info.Labels)
+	}
+	if info.InternalIP != "10.0.0.5" {
+		t.Fatalf("InternalIP = %q, want 10.0.0.5", info.InternalIP)
+	}
+	if info.ExternalIP != "203.0.113.10" {
+		t.Fatalf("ExternalIP = %q, want 203.0.113.10", info.ExternalIP)
+	}
+	if info.NodeIP() != "10.0.0.5" {
+		t.Fatalf("NodeIP() = %q, want 10.0.0.5", info.NodeIP())
 	}
 }
 
@@ -152,7 +264,7 @@ func TestEnsureThunderZoneCreatesThenRelistsAndUsesSmallestMatch(t *testing.T) {
 				return
 			}
 			_, _ = w.Write([]byte(`{"zones":[{"zoneId":"zone-c","displayName":"us-east-1a"},{"zoneId":"zone-a","displayName":"us-east-1a"}]}`))
-		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/zones":
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/zones/ensure":
 			postCount++
 			_, _ = w.Write([]byte(`{"zoneId":"zone-c","displayName":"us-east-1a"}`))
 		default:
@@ -188,7 +300,7 @@ func TestEnsureThunderZoneRelistsAfterConflict(t *testing.T) {
 				return
 			}
 			_, _ = w.Write([]byte(`{"zones":[{"zoneId":"zone-a","displayName":"us-east-1a"}]}`))
-		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/zones":
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/zones/ensure":
 			w.WriteHeader(http.StatusConflict)
 			_, _ = w.Write([]byte(`{"error":"Conflict","message":"zone already exists"}`))
 		default:
@@ -318,27 +430,45 @@ func TestNvidiaChecksUsesNodePathsAndNvidiaSMI(t *testing.T) {
 	if driver != "535.104.05" {
 		t.Fatalf("driver = %q, want 535.104.05", driver)
 	}
-	if !reflect.DeepEqual(runner.commands, []string{
+	if !reflect.DeepEqual(runner.recordedCommands(), []string{
 		"/nvidia-smi --query-gpu=driver_version --format=csv,noheader,nounits",
 		"/nvidia-smi --query-gpu=index --format=csv,noheader,nounits",
 	}) {
-		t.Fatalf("commands = %#v", runner.commands)
+		t.Fatalf("commands = %#v", runner.recordedCommands())
 	}
 }
 
 type fakeRunner struct {
-	outputs  map[string][]byte
-	errors   map[string]error
+	outputs map[string][]byte
+	errors  map[string]error
+
+	// The daemon runs its reconcile loop on its own goroutine while a test
+	// inspects what it ran, so the record is guarded.
+	mu       sync.Mutex
 	commands []string
+}
+
+// recordedCommands is a snapshot of what the daemon asked the host to run.
+func (r *fakeRunner) recordedCommands() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.commands...)
 }
 
 func (r *fakeRunner) CombinedOutput(_ context.Context, name string, args ...string) ([]byte, error) {
 	key := commandKey(name, args...)
+	r.mu.Lock()
 	r.commands = append(r.commands, key)
+	r.mu.Unlock()
 	return r.outputs[key], r.errors[key]
 }
 
-func (r *fakeRunner) RunShell(_ context.Context, _ string) error {
+// RunShell records the command so a test can assert on what the daemon asked
+// the host to run, such as the Thunder installer and its environment.
+func (r *fakeRunner) RunShell(_ context.Context, command string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.commands = append(r.commands, command)
 	return nil
 }
 
@@ -363,12 +493,12 @@ func commandKey(name string, args ...string) string {
 	return name + " " + strings.Join(args, " ")
 }
 
-type fakeNodeLabelReader struct {
-	labels   map[string]string
+type fakeNodeInfoReader struct {
+	node     NodeInfo
 	nodeName string
 }
 
-func (r *fakeNodeLabelReader) Labels(_ context.Context, nodeName string) (map[string]string, error) {
+func (r *fakeNodeInfoReader) Node(_ context.Context, nodeName string) (NodeInfo, error) {
 	r.nodeName = nodeName
-	return r.labels, nil
+	return r.node, nil
 }

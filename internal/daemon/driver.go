@@ -18,17 +18,24 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/dynamic-resource-allocation/kubeletplugin"
 
-	thunder "thunder-device-plugin/pkg/thunder-sdk"
+	thunder "github.com/Thunder-Compute/thunder-sdk"
 )
 
-const (
-	DefaultDriverName             = "vgpu.thundercompute.com"
-	DefaultThunderClientNamespace = "thunder-system"
-	DefaultCDIKind                = "vgpu.thundercompute.com/vgpu"
+// thunderDomain qualifies every resource, attribute and label the driver owns.
+const thunderDomain = "thundercompute.com"
 
-	GPUTypeAttributeName = "vgpu.thundercompute.com/gpu_type"
-	ZoneAttributeName    = "vgpu.thundercompute.com/zone"
-	GPUCountCapacityName = "vgpu.thundercompute.com/gpu_count"
+const (
+	DefaultDriverName             = thunderDomain
+	DefaultThunderClientNamespace = "thunder-system"
+	DefaultCDIKind                = thunderDomain + "/gpu"
+
+	GPUTypeAttributeName = thunderDomain + "/gpu_type"
+	ZoneAttributeName    = thunderDomain + "/zone"
+
+	claimUIDLabelName       = thunderDomain + "/claim-uid"
+	claimNameLabelName      = thunderDomain + "/claim-name"
+	claimNamespaceLabelName = thunderDomain + "/claim-namespace"
+	gpuTypeLabelName        = thunderDomain + "/gpu-type"
 )
 
 var ErrNotFound = errors.New("not found")
@@ -37,6 +44,11 @@ type Allocation struct {
 	ClaimUID       types.UID
 	ClaimNamespace string
 	ClaimName      string
+
+	// Devices holds every device the claim was allocated from this driver.
+	// The operator publishes one device per GPU, so a multi-GPU claim has one
+	// entry per GPU and GPUCount is simply how many there are.
+	Devices []AllocatedDevice
 
 	RequestName string
 	PoolName    string
@@ -48,6 +60,14 @@ type Allocation struct {
 	Zone     string
 	GPUType  string
 	GPUCount int64
+}
+
+// AllocatedDevice is one GPU the scheduler assigned to a claim.
+type AllocatedDevice struct {
+	RequestName string
+	PoolName    string
+	DeviceName  string
+	ShareID     *types.UID
 }
 
 type ResourceConsumer struct {
@@ -77,7 +97,6 @@ type ThunderClient struct {
 	CDIName           string
 	EnrollmentTokenID string
 	GuestNamespace    string
-	GuestConfigMap    string
 	GuestSecret       string
 	CreatedAt         time.Time
 	UpdatedAt         time.Time
@@ -86,6 +105,10 @@ type ThunderClient struct {
 type TokenIssuer interface {
 	Mint(ctx context.Context, allocation Allocation) (tokenID string, token string, expiresAt time.Time, err error)
 	Revoke(ctx context.Context, tokenID string) error
+	// RevokeClient revokes the client an enrollment token was exchanged for.
+	// Revoking the token alone does not: once spent, the token and the client
+	// it produced are separate objects in Thunder.
+	RevokeClient(ctx context.Context, clientID string) error
 }
 
 type ThunderClientStore interface {
@@ -97,12 +120,14 @@ type ThunderClientStore interface {
 type CDIDeviceStore interface {
 	Create(ctx context.Context, allocation Allocation, token string) (qualifiedName string, err error)
 	Remove(ctx context.Context, qualifiedName string) error
+	// StagedClientID reports the Thunder client the CDI hook enrolled for this
+	// device, or "" if no container ever started and none was created.
+	StagedClientID(qualifiedName string) string
 }
 
 type GuestArtifacts struct {
-	Namespace     string
-	ConfigMapName string
-	SecretName    string
+	Namespace  string
+	SecretName string
 }
 
 type GuestConfigStore interface {
@@ -184,7 +209,6 @@ func (d *Driver) prepareOne(ctx context.Context, claim *resourcev1.ResourceClaim
 	client.CDIName = cdiName
 	client.EnrollmentTokenID = tokenID
 	client.GuestNamespace = guestArtifacts.Namespace
-	client.GuestConfigMap = guestArtifacts.ConfigMapName
 	client.GuestSecret = guestArtifacts.SecretName
 	if err := d.Clients.Upsert(ctx, client); err != nil {
 		_ = d.CDI.Remove(ctx, cdiName)
@@ -212,6 +236,19 @@ func (d *Driver) unprepareOne(ctx context.Context, claim kubeletplugin.Namespace
 		return fmt.Errorf("load ThunderClient: %w", err)
 	}
 
+	// The client has to go before the CDI state that records its ID does.
+	// A claim whose container never started has no client, only an unspent
+	// token, and revoking the token below is the whole cleanup.
+	clientID := ""
+	if strings.TrimSpace(client.CDIName) != "" {
+		clientID = d.CDI.StagedClientID(client.CDIName)
+	}
+	if clientID != "" {
+		if err := d.Tokens.RevokeClient(ctx, clientID); err != nil {
+			return fmt.Errorf("revoke thunder client %q: %w", clientID, err)
+		}
+	}
+
 	if strings.TrimSpace(client.EnrollmentTokenID) != "" {
 		if err := d.Tokens.Revoke(ctx, client.EnrollmentTokenID); err != nil {
 			return fmt.Errorf("revoke enrollment token %q: %w", client.EnrollmentTokenID, err)
@@ -225,9 +262,8 @@ func (d *Driver) unprepareOne(ctx context.Context, claim kubeletplugin.Namespace
 	}
 
 	if err := d.Guest.Remove(ctx, GuestArtifacts{
-		Namespace:     firstNonEmpty(client.GuestNamespace, client.ClaimNamespace, claim.Namespace),
-		ConfigMapName: client.GuestConfigMap,
-		SecretName:    client.GuestSecret,
+		Namespace:  firstNonEmpty(client.GuestNamespace, client.ClaimNamespace, claim.Namespace),
+		SecretName: client.GuestSecret,
 	}); err != nil {
 		return fmt.Errorf("remove guest Thunder artifacts: %w", err)
 	}
@@ -236,7 +272,8 @@ func (d *Driver) unprepareOne(ctx context.Context, claim kubeletplugin.Namespace
 		return fmt.Errorf("delete ThunderClient: %w", err)
 	}
 	if d.Logger != nil {
-		d.Logger.Info("unprepared Thunder ResourceClaim", "claim", claim.String(), "tokenID", client.EnrollmentTokenID)
+		d.Logger.Info("unprepared Thunder ResourceClaim", "claim", claim.String(),
+			"tokenID", client.EnrollmentTokenID, "clientID", clientID)
 	}
 	return nil
 }
@@ -247,48 +284,60 @@ func (d *Driver) decodeAllocation(ctx context.Context, claim *resourcev1.Resourc
 	}
 
 	driverName := d.driverName()
-	for _, allocation := range claim.Status.Allocation.Devices.Results {
-		if allocation.Driver != driverName {
+	allocation := Allocation{
+		ClaimUID:       claim.UID,
+		ClaimNamespace: claim.Namespace,
+		ClaimName:      claim.Name,
+		Consumer:       firstConsumer(claim),
+		NodeName:       d.NodeName,
+	}
+
+	for _, result := range claim.Status.Allocation.Devices.Results {
+		if result.Driver != driverName {
 			continue
 		}
 
-		device, err := d.allocatedDevice(ctx, allocation.Pool, allocation.Device)
+		device, err := d.allocatedDevice(ctx, result.Pool, result.Device)
 		if err != nil {
 			return Allocation{}, err
 		}
-
 		zone := stringAttribute(device, ZoneAttributeName)
 		gpuType := stringAttribute(device, GPUTypeAttributeName)
 		if zone == "" || gpuType == "" {
-			return Allocation{}, fmt.Errorf("allocated device %s/%s is missing Thunder zone or gpu type attributes", allocation.Pool, allocation.Device)
+			return Allocation{}, fmt.Errorf("allocated device %s/%s is missing Thunder zone or gpu type attributes", result.Pool, result.Device)
 		}
+		// Every device in one claim comes from a single zone and GPU type: the
+		// pool is keyed on both, and a request resolves within one pool.
+		if allocation.Zone != "" && (allocation.Zone != zone || allocation.GPUType != gpuType) {
+			return Allocation{}, fmt.Errorf("claim mixes Thunder pools: %s/%s and %s/%s",
+				allocation.Zone, allocation.GPUType, zone, gpuType)
+		}
+		allocation.Zone = zone
+		allocation.GPUType = gpuType
 
-		gpuCount := int64(1)
-		if allocation.ConsumedCapacity != nil {
-			if quantity, ok := allocation.ConsumedCapacity[resourcev1.QualifiedName(GPUCountCapacityName)]; ok {
-				gpuCount = quantity.Value()
-			}
-		}
-		if gpuCount <= 0 {
-			gpuCount = 1
-		}
-
-		return Allocation{
-			ClaimUID:       claim.UID,
-			ClaimNamespace: claim.Namespace,
-			ClaimName:      claim.Name,
-			RequestName:    allocation.Request,
-			PoolName:       allocation.Pool,
-			DeviceName:     allocation.Device,
-			ShareID:        allocation.ShareID,
-			Consumer:       firstConsumer(claim),
-			NodeName:       d.NodeName,
-			Zone:           zone,
-			GPUType:        gpuType,
-			GPUCount:       gpuCount,
-		}, nil
+		allocation.Devices = append(allocation.Devices, AllocatedDevice{
+			RequestName: result.Request,
+			PoolName:    result.Pool,
+			DeviceName:  result.Device,
+			ShareID:     result.ShareID,
+		})
 	}
-	return Allocation{}, fmt.Errorf("claim has no allocation result for driver %s", driverName)
+
+	if len(allocation.Devices) == 0 {
+		return Allocation{}, fmt.Errorf("claim has no allocation result for driver %s", driverName)
+	}
+
+	// One GPU per allocated device.
+	allocation.GPUCount = int64(len(allocation.Devices))
+
+	// The first device names the claim in the ThunderClient status and in
+	// logs; the CDI device itself is per claim, not per GPU.
+	first := allocation.Devices[0]
+	allocation.RequestName = first.RequestName
+	allocation.PoolName = first.PoolName
+	allocation.DeviceName = first.DeviceName
+	allocation.ShareID = first.ShareID
+	return allocation, nil
 }
 
 func (d *Driver) allocatedDevice(ctx context.Context, poolName, deviceName string) (*resourcev1.Device, error) {
@@ -351,16 +400,21 @@ func (d *Driver) driverName() string {
 	return strings.TrimSpace(d.DriverName)
 }
 
+// devicesFor reports one entry per allocated GPU. They all reference the same
+// CDI device because a claim maps to a single Thunder client, however many GPUs
+// that client was enrolled with.
 func devicesFor(cdiName string, allocation Allocation) []kubeletplugin.Device {
-	return []kubeletplugin.Device{
-		{
-			Requests:     []string{allocation.RequestName},
-			PoolName:     allocation.PoolName,
-			DeviceName:   allocation.DeviceName,
-			ShareID:      allocation.ShareID,
+	devices := make([]kubeletplugin.Device, 0, len(allocation.Devices))
+	for _, device := range allocation.Devices {
+		devices = append(devices, kubeletplugin.Device{
+			Requests:     []string{device.RequestName},
+			PoolName:     device.PoolName,
+			DeviceName:   device.DeviceName,
+			ShareID:      device.ShareID,
 			CDIDeviceIDs: []string{cdiName},
-		},
+		})
 	}
+	return devices
 }
 
 func firstConsumer(claim *resourcev1.ResourceClaim) ResourceConsumer {
@@ -425,7 +479,7 @@ func IsNotFoundError(err error) bool {
 	return errors.Is(err, ErrNotFound) || apierrors.IsNotFound(err)
 }
 
-// ThunderTokenIssuer adapts pkg/thunder-sdk to the daemon DRA plugin.
+// ThunderTokenIssuer adapts the Thunder SDK to the daemon DRA plugin.
 type ThunderTokenIssuer struct {
 	Client *thunder.Client
 	ZoneID string
@@ -452,6 +506,21 @@ func (i ThunderTokenIssuer) Mint(ctx context.Context, allocation Allocation) (st
 		expiresAt = *token.ExpiresAt
 	}
 	return token.EnrollmentTokenID, token.EnrollmentToken, expiresAt, nil
+}
+
+// RevokeClient revokes a client that was enrolled by exchanging a token.
+func (i ThunderTokenIssuer) RevokeClient(ctx context.Context, clientID string) error {
+	if strings.TrimSpace(clientID) == "" {
+		return nil
+	}
+	if i.Client == nil {
+		return errors.New("thunder client is required")
+	}
+	_, err := i.Client.RevokeClient(ctx, clientID)
+	if thunder.IsNotFound(err) {
+		return nil
+	}
+	return err
 }
 
 func (i ThunderTokenIssuer) Revoke(ctx context.Context, tokenID string) error {

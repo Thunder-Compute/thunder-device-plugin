@@ -54,8 +54,6 @@ spec:
                   type: string
                 guestNamespace:
                   type: string
-                guestConfigMapName:
-                  type: string
                 guestSecretName:
                   type: string
                 createdAt:
@@ -87,6 +85,10 @@ spec:
         - name: Node
           type: string
           jsonPath: .status.nodeName
+        - name: ID
+          type: string
+          description: Thunder enrollment token ID for this client
+          jsonPath: .status.enrollmentTokenID
         - name: Age
           type: date
           jsonPath: .metadata.creationTimestamp
