@@ -1,9 +1,9 @@
 apiVersion: v1
 kind: Pod
 metadata:
-  name: {{ include "thunder-vgpu-test-pod.fullname" . | quote }}
+  name: {{ include "thunder-gpu-test-pod.fullname" . | quote }}
   labels:
-    {{- include "thunder-vgpu-test-pod.labels" . | nindent 4 }}
+    {{- include "thunder-gpu-test-pod.labels" . | nindent 4 }}
     {{- with .Values.podLabels }}
     {{- toYaml . | nindent 4 }}
     {{- end }}
@@ -15,7 +15,7 @@ spec:
   restartPolicy: {{ .Values.restartPolicy | quote }}
   resourceClaims:
     - name: {{ .Values.claimName | quote }}
-      resourceClaimTemplateName: {{ include "thunder-vgpu-test-pod.fullname" . | quote }}
+      resourceClaimTemplateName: {{ include "thunder-gpu-test-pod.fullname" . | quote }}
   containers:
     - name: tester
       image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"

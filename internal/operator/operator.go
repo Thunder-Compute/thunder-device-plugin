@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"reflect"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -14,15 +15,21 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 )
 
 type Operator struct {
-	cfg       Config
-	kube      kubernetes.Interface
-	inventory InventorySource
-	logger    *slog.Logger
-	cache     map[poolKey]publishedPool
+	cfg     Config
+	kube    kubernetes.Interface
+	clients dynamic.Interface
+	thunder ThunderAPI
+	logger  *slog.Logger
+	cache   map[poolKey]publishedPool
+	// orphans records when a ThunderClient was first seen without its
+	// ResourceClaim, so reaping can wait out a grace period.
+	orphans map[string]time.Time
+	clock   func() time.Time
 }
 
 type publishedPool struct {
@@ -30,16 +37,20 @@ type publishedPool struct {
 	Generation int64
 }
 
-func New(cfg Config, kube kubernetes.Interface, inventory InventorySource, logger *slog.Logger) *Operator {
+// New builds an operator. clients may be nil, which disables reaping of
+// orphaned ThunderClients.
+func New(cfg Config, kube kubernetes.Interface, clients dynamic.Interface, thunder ThunderAPI, logger *slog.Logger) *Operator {
 	if logger == nil {
 		logger = slog.Default()
 	}
 	return &Operator{
-		cfg:       cfg,
-		kube:      kube,
-		inventory: inventory,
-		logger:    logger,
-		cache:     map[poolKey]publishedPool{},
+		cfg:     cfg,
+		kube:    kube,
+		clients: clients,
+		thunder: thunder,
+		logger:  logger,
+		cache:   map[poolKey]publishedPool{},
+		orphans: map[string]time.Time{},
 	}
 }
 
@@ -68,43 +79,33 @@ func (o *Operator) Sync(ctx context.Context) error {
 		return err
 	}
 
-	desired, err := buildDesiredPools(ctx, o.inventory)
+	desired, err := buildDesiredPools(ctx, o.thunder, o.logger)
 	if err != nil {
 		return err
 	}
 
-	for key, slice := range existing {
+	for key, slices := range existing {
 		if _, ok := desired[key]; ok {
 			continue
 		}
-		if err := o.kube.ResourceV1().ResourceSlices().Delete(ctx, slice.Name, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
-			return fmt.Errorf("delete stale ResourceSlice %s: %w", slice.Name, err)
+		for _, slice := range slices {
+			if err := o.deleteSlice(ctx, slice); err != nil {
+				return err
+			}
 		}
 		delete(o.cache, key)
-		o.logger.Info("deleted stale ResourceSlice", "name", slice.Name, "zone", key.Zone, "gpuType", key.GPUType)
+		o.logger.Info("deleted stale pool", "zone", key.Zone, "gpuType", key.GPUType, "slices", len(slices))
 	}
 
 	for _, key := range sortedPoolKeys(desired) {
 		definition := desired[key]
 		current := existing[key]
 		generation := o.nextGeneration(key, definition, current)
-		wanted := buildResourceSlice(o.cfg, definition, generation)
+		wanted := buildResourceSlices(o.cfg, definition, generation)
 
-		if current == nil {
-			if _, err := o.kube.ResourceV1().ResourceSlices().Create(ctx, wanted, metav1.CreateOptions{}); err != nil {
-				return fmt.Errorf("create ResourceSlice %s: %w", wanted.Name, err)
-			}
-			o.logger.Info("created ResourceSlice", "name", wanted.Name, "generation", generation, "capacity", definition.Capacity)
-		} else if !samePublishedResourceSlice(current, wanted) {
-			updated := current.DeepCopy()
-			updated.Labels = wanted.Labels
-			updated.Spec = wanted.Spec
-			if _, err := o.kube.ResourceV1().ResourceSlices().Update(ctx, updated, metav1.UpdateOptions{}); err != nil {
-				return fmt.Errorf("update ResourceSlice %s: %w", wanted.Name, err)
-			}
-			o.logger.Info("updated ResourceSlice", "name", wanted.Name, "generation", generation, "capacity", definition.Capacity)
+		if err := o.applyPool(ctx, key, current, wanted, definition, generation); err != nil {
+			return err
 		}
-
 		o.cache[key] = publishedPool{Definition: definition, Generation: generation}
 	}
 
@@ -113,13 +114,79 @@ func (o *Operator) Sync(ctx context.Context) error {
 			delete(o.cache, key)
 		}
 	}
+
+	// Device classes come last: a class is only useful once the devices it
+	// selects are published.
+	if err := o.syncDeviceClasses(ctx, desired); err != nil {
+		return err
+	}
+	return o.reapOrphanedClients(ctx)
+}
+
+// applyPool reconciles every shard of one pool. A pool is published as several
+// slices when the zone holds more GPUs than fit in one, so shards that are no
+// longer needed have to be deleted as the zone shrinks.
+func (o *Operator) applyPool(
+	ctx context.Context,
+	key poolKey,
+	current []*resourcev1.ResourceSlice,
+	wanted []*resourcev1.ResourceSlice,
+	definition poolDefinition,
+	generation int64,
+) error {
+	byName := make(map[string]*resourcev1.ResourceSlice, len(current))
+	for _, slice := range current {
+		byName[slice.Name] = slice
+	}
+
+	for _, slice := range wanted {
+		existing, ok := byName[slice.Name]
+		delete(byName, slice.Name)
+
+		if !ok {
+			if _, err := o.kube.ResourceV1().ResourceSlices().Create(ctx, slice, metav1.CreateOptions{}); err != nil {
+				return fmt.Errorf("create ResourceSlice %s: %w", slice.Name, err)
+			}
+			o.logger.Info("created ResourceSlice", "name", slice.Name, "generation", generation,
+				"devices", len(slice.Spec.Devices), "gpus", definition.Capacity)
+			continue
+		}
+		if samePublishedResourceSlice(existing, slice) {
+			continue
+		}
+		updated := existing.DeepCopy()
+		updated.Labels = slice.Labels
+		updated.Spec = slice.Spec
+		if _, err := o.kube.ResourceV1().ResourceSlices().Update(ctx, updated, metav1.UpdateOptions{}); err != nil {
+			return fmt.Errorf("update ResourceSlice %s: %w", slice.Name, err)
+		}
+		o.logger.Info("updated ResourceSlice", "name", slice.Name, "generation", generation,
+			"devices", len(slice.Spec.Devices), "gpus", definition.Capacity)
+	}
+
+	// Whatever is left belonged to a wider version of this pool.
+	for _, stale := range byName {
+		if err := o.deleteSlice(ctx, stale); err != nil {
+			return err
+		}
+		o.logger.Info("deleted surplus ResourceSlice", "name", stale.Name,
+			"zone", key.Zone, "gpuType", key.GPUType)
+	}
 	return nil
 }
 
-func (o *Operator) nextGeneration(key poolKey, definition poolDefinition, current *resourcev1.ResourceSlice) int64 {
-	if current != nil && currentDefinitionMatches(current, definition, o.cfg.ValidGPUCounts, o.cfg.ZoneLabelKey) {
-		if current.Spec.Pool.Generation > 0 {
-			return current.Spec.Pool.Generation
+func (o *Operator) deleteSlice(ctx context.Context, slice *resourcev1.ResourceSlice) error {
+	err := o.kube.ResourceV1().ResourceSlices().Delete(ctx, slice.Name, metav1.DeleteOptions{})
+	if err != nil && !apierrors.IsNotFound(err) {
+		return fmt.Errorf("delete ResourceSlice %s: %w", slice.Name, err)
+	}
+	return nil
+}
+
+func (o *Operator) nextGeneration(key poolKey, definition poolDefinition, current []*resourcev1.ResourceSlice) int64 {
+	if len(current) > 0 && currentDefinitionMatches(o.cfg, current, definition) {
+		if generation := current[0].Spec.Pool.Generation; generation > 0 {
+			return generation
 		}
 		return 1
 	}
@@ -129,13 +196,13 @@ func (o *Operator) nextGeneration(key poolKey, definition poolDefinition, curren
 		}
 		return cached.Generation + 1
 	}
-	if current == nil || current.Spec.Pool.Generation <= 0 {
+	if len(current) == 0 || current[0].Spec.Pool.Generation <= 0 {
 		return 1
 	}
-	return current.Spec.Pool.Generation + 1
+	return current[0].Spec.Pool.Generation + 1
 }
 
-func (o *Operator) listExistingResourceSlices(ctx context.Context) (map[poolKey]*resourcev1.ResourceSlice, error) {
+func (o *Operator) listExistingResourceSlices(ctx context.Context) (map[poolKey][]*resourcev1.ResourceSlice, error) {
 	selector := labels.Set{
 		"app.kubernetes.io/name":      driverAppName,
 		"app.kubernetes.io/component": resourceInventoryComponent,
@@ -149,7 +216,7 @@ func (o *Operator) listExistingResourceSlices(ctx context.Context) (map[poolKey]
 		return nil, fmt.Errorf("list ResourceSlices: %w", err)
 	}
 
-	existing := map[poolKey]*resourcev1.ResourceSlice{}
+	existing := map[poolKey][]*resourcev1.ResourceSlice{}
 	for i := range list.Items {
 		item := &list.Items[i]
 		key, ok := resourceSliceKey(item)
@@ -157,12 +224,17 @@ func (o *Operator) listExistingResourceSlices(ctx context.Context) (map[poolKey]
 			o.logger.Warn("ignoring Thunder ResourceSlice with unrecognized pool", "name", item.Name, "pool", item.Spec.Pool.Name)
 			continue
 		}
-		existing[key] = item
-		if _, ok := o.cache[key]; !ok {
-			definition := definitionFromResourceSlice(item)
-			if definition.Capacity > 0 {
-				o.cache[key] = publishedPool{Definition: definition, Generation: item.Spec.Pool.Generation}
-			}
+		existing[key] = append(existing[key], item)
+	}
+
+	for key, slices := range existing {
+		sort.Slice(slices, func(i, j int) bool { return slices[i].Name < slices[j].Name })
+		if _, ok := o.cache[key]; ok {
+			continue
+		}
+		definition := definitionFromResourceSlices(slices)
+		if definition.Capacity > 0 {
+			o.cache[key] = publishedPool{Definition: definition, Generation: slices[0].Spec.Pool.Generation}
 		}
 	}
 	return existing, nil
@@ -180,31 +252,43 @@ func samePublishedResourceSlice(current, wanted *resourcev1.ResourceSlice) bool 
 	return reflect.DeepEqual(current.Labels, wanted.Labels) && reflect.DeepEqual(current.Spec, wanted.Spec)
 }
 
-func currentDefinitionMatches(current *resourcev1.ResourceSlice, definition poolDefinition, validCounts []string, zoneLabelKey string) bool {
-	wanted := buildResourceSlice(Config{
-		DriverName:        current.Spec.Driver,
+func currentDefinitionMatches(cfg Config, current []*resourcev1.ResourceSlice, definition poolDefinition) bool {
+	wanted := buildResourceSlices(Config{
+		DriverName:        current[0].Spec.Driver,
 		NamePrefix:        DefaultNamePrefix,
-		ZoneLabelKey:      zoneLabelKey,
-		ValidGPUCounts:    validCounts,
+		ZoneLabelKey:      cfg.ZoneLabelKey,
 		ReconcileInterval: time.Minute,
-	}, definition, current.Spec.Pool.Generation)
-	return reflect.DeepEqual(current.Spec, wanted.Spec)
+	}, definition, current[0].Spec.Pool.Generation)
+	if len(wanted) != len(current) {
+		return false
+	}
+	for i := range wanted {
+		if !reflect.DeepEqual(current[i].Spec, wanted[i].Spec) {
+			return false
+		}
+	}
+	return true
 }
 
-func definitionFromResourceSlice(slice *resourcev1.ResourceSlice) poolDefinition {
-	key, ok := resourceSliceKey(slice)
-	if !ok || len(slice.Spec.Devices) == 0 {
+// definitionFromResourceSlices recovers what a published pool represents. The
+// GPU count is the total number of devices across every shard.
+func definitionFromResourceSlices(slices []*resourcev1.ResourceSlice) poolDefinition {
+	if len(slices) == 0 {
+		return poolDefinition{}
+	}
+	key, ok := resourceSliceKey(slices[0])
+	if !ok {
 		return poolDefinition{}
 	}
 	capacity := int64(0)
-	if deviceCapacity, ok := slice.Spec.Devices[0].Capacity[resourcev1.QualifiedName(gpuCountCapacityName)]; ok {
-		capacity = deviceCapacity.Value.Value()
+	for _, slice := range slices {
+		capacity += int64(len(slice.Spec.Devices))
 	}
 	return poolDefinition{
 		Zone:           key.Zone,
 		GPUType:        key.GPUType,
-		HostCapacity:   parseIntLabel(slice.Labels["vgpu.thundercompute.com/host-capacity"]),
-		ClientCapacity: parseIntLabel(slice.Labels["vgpu.thundercompute.com/client-capacity"]),
+		HostCapacity:   parseIntLabel(slices[0].Labels[hostCapacityLabelName]),
+		ClientCapacity: parseIntLabel(slices[0].Labels[clientCapacityLabelName]),
 		Capacity:       capacity,
 	}
 }

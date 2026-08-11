@@ -1,39 +1,36 @@
-{{- define "thunder-vgpu-test-vm.name" -}}
+{{- define "thunder-gpu-test-vm.name" -}}
 {{- default .Chart.Name .Values.nameOverride | trunc 63 | trimSuffix "-" -}}
 {{- end -}}
 
-{{- define "thunder-vgpu-test-vm.fullname" -}}
+{{- define "thunder-gpu-test-vm.fullname" -}}
 {{- if .Values.fullnameOverride -}}
 {{- .Values.fullnameOverride | trunc 63 | trimSuffix "-" -}}
 {{- else -}}
-{{- printf "%s-%s" .Release.Name (include "thunder-vgpu-test-vm.name" .) | trunc 63 | trimSuffix "-" -}}
+{{- printf "%s-%s" .Release.Name (include "thunder-gpu-test-vm.name" .) | trunc 63 | trimSuffix "-" -}}
 {{- end -}}
 {{- end -}}
 
-{{- define "thunder-vgpu-test-vm.labels" -}}
-app.kubernetes.io/name: {{ include "thunder-vgpu-test-vm.name" . | quote }}
+{{- define "thunder-gpu-test-vm.labels" -}}
+app.kubernetes.io/name: {{ include "thunder-gpu-test-vm.name" . | quote }}
 app.kubernetes.io/instance: {{ .Release.Name | quote }}
 app.kubernetes.io/managed-by: {{ .Release.Service | quote }}
 helm.sh/chart: {{ printf "%s-%s" .Chart.Name .Chart.Version | quote }}
 {{- end -}}
 
 
-{{- define "thunder-vgpu-test-vm.rootDiskName" -}}
+{{- define "thunder-gpu-test-vm.rootDiskName" -}}
 {{- if .Values.dataVolume.name -}}
 {{- .Values.dataVolume.name | trunc 63 | trimSuffix "-" -}}
 {{- else -}}
-{{- printf "%s-rootdisk" (include "thunder-vgpu-test-vm.fullname" .) | trunc 63 | trimSuffix "-" -}}
+{{- printf "%s-rootdisk" (include "thunder-gpu-test-vm.fullname" .) | trunc 63 | trimSuffix "-" -}}
 {{- end -}}
 {{- end -}}
 
-{{- define "thunder-vgpu-test-vm.claimName" -}}
-{{- printf "%s-claim" (include "thunder-vgpu-test-vm.fullname" .) | trunc 253 | trimSuffix "-" -}}
+{{- define "thunder-gpu-test-vm.claimName" -}}
+{{- printf "%s-claim" (include "thunder-gpu-test-vm.fullname" .) | trunc 253 | trimSuffix "-" -}}
 {{- end -}}
 
-{{- define "thunder-vgpu-test-vm.guestConfigMapName" -}}
-{{- printf "%s-thunder-configmap" (include "thunder-vgpu-test-vm.claimName" .) | trunc 253 | trimSuffix "-" -}}
-{{- end -}}
 
-{{- define "thunder-vgpu-test-vm.guestSecretName" -}}
-{{- printf "%s-thunder-secret" (include "thunder-vgpu-test-vm.claimName" .) | trunc 253 | trimSuffix "-" -}}
+{{- define "thunder-gpu-test-vm.guestSecretName" -}}
+{{- printf "%s-thunder-setup" (include "thunder-gpu-test-vm.claimName" .) | trunc 253 | trimSuffix "-" -}}
 {{- end -}}

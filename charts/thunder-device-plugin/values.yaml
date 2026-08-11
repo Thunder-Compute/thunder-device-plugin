@@ -1,94 +1,128 @@
-namespace:
-  create: true
-  name: thunder-system
+# Default values for thunder-device-plugin.
+# This is a YAML-formatted file.
+# Declare variables to be passed into your templates.
 
-image:
-  repository: thundercompute/thunder-device-plugin-daemon
-  tag: latest
-  pullPolicy: IfNotPresent
+# -- Override the chart name used to build resource names.
+nameOverride: ""
+# -- Override the fully generated name used for resources.
+fullnameOverride: ""
+# -- Image pull secrets applied to both components. (Example: `[{name: my-registry}]`)
+imagePullSecrets: []
+# -- DRA driver name. It identifies this driver to the scheduler and kubelet, and names the CDI devices it produces, so change it only to run two independent installs side by side.
+driverName: thundercompute.com
 
-operator:
-  enabled: true
-  replicas: 1
-  image:
-    repository: thundercompute/thunder-dra-operator
-    tag: latest
-    pullPolicy: IfNotPresent
-  driverName: vgpu.thundercompute.com
-  resourceSliceNamePrefix: thunder
-  reconcileInterval: 60s
-  validGPUCounts:
-    - "1"
-    # - "2"
-    # - "4"
-    # - "8"
-  podAnnotations: {}
-  podLabels: {}
-  nodeSelector: {}
-  tolerations: []
-  affinity: {}
-  resources: {}
+## thunder api
 
 thunder:
-  # Prefer passing this with --set-file or an external secrets flow.
-  apiToken: ""
-  apiURL: "https://api.thundercompute.com:2096"
-  # Set this to reuse a pre-created Secret in thunder-system.
-  existingSecret: ""
+  # -- Name of an existing Secret holding the Thunder API token under the key `THUNDER_API_TOKEN`. Create it before installing; the chart never writes the token itself.
   secretName: thunder-api
-  apiTokenKey: THUNDER_API_TOKEN
-  apiURLKey: THUNDER_API_URL
+  # -- Thunder API endpoint.
+  apiURL: "https://registry.thundercompute.com"
+  # -- Telemetry collector written into each container's Thunder client config. Set to the staging collector when apiURL points at staging.
+  telemetryURL: "https://telemetry.thundercompute.com:2096"
+  # -- Host the Thunder client artifacts are downloaded from. The daemon fetches `libthunder.so` from here and stages it into every container that claims a GPU. Point at a staging artifact host to run unreleased client builds.
+  artifactBaseURL: "https://get.thundercompute.com"
+  # -- Installer the daemon reads the pinned libthunder.so digest out of. It is read, never executed. Empty derives it as `<artifactBaseURL>/install.sh`, which is almost always what you want.
+  installURL: ""
+
+## operator
+
+operator:
+  # -- Setting that deploys the operator, which turns Thunder inventory into Kubernetes GPU inventory. Without it no GPUs are advertised.
+  enabled: true
+  image:
+    # -- Repository for the operator image.
+    repository: thundercompute/thunder-dra-operator
+    # -- Tag for the operator image.
+    tag: latest
+    # -- Pull policy for the operator image. (Options: "Always", "IfNotPresent", "Never")
+    pullPolicy: IfNotPresent
+  # -- How often Thunder inventory is polled. New GPU models and capacity changes appear within this interval.
+  reconcileInterval: 60s
+  # -- How long a per-claim client resource may outlive its ResourceClaim before the operator revokes its Thunder enrollment and removes it. A claim is deleted slightly before the kubelet finishes releasing the GPU, so reaping immediately could cut a workload off mid-shutdown.
+  orphanGracePeriod: 5m
+  # -- Prefix for the extended resource of each GPU model, so a workload can ask for `thundercompute.com/gpu-a6000: 2`. Set to "" on clusters below 1.36, where workloads use ResourceClaims instead.
+  extendedResourcePrefix: thundercompute.com/gpu-
+  # -- Annotations added to operator pods.
+  podAnnotations: {}
+  # -- Labels added to operator pods.
+  podLabels: {}
+  # -- Node selector for operator pods.
+  nodeSelector: {}
+  # -- Tolerations for operator pods.
+  tolerations: []
+  # -- Affinity for operator pods.
+  affinity: {}
+  # -- Resource requests and limits for the operator container.
+  resources: {}
+
+## node daemon
+
+daemon:
+  image:
+    # -- Repository for the node daemon image.
+    repository: thundercompute/thunder-device-plugin-daemon
+    # -- Tag for the node daemon image.
+    tag: latest
+    # -- Pull policy for the node daemon image. (Options: "Always", "IfNotPresent", "Never")
+    pullPolicy: IfNotPresent
+  # -- Annotations added to daemon pods.
+  podAnnotations: {}
+  # -- Labels added to daemon pods.
+  podLabels: {}
+  # -- Additional node selector for daemon pods, applied on top of the Thunder node and zone labels.
+  nodeSelector: {}
+  # -- Tolerations for daemon pods.
+  tolerations: []
+  # -- Additional affinity for daemon pods, merged with the required Thunder node affinity.
+  affinity: {}
+  # -- Resource requests and limits for the daemon container.
+  resources: {}
+
+## node labels
 
 node:
-  # Kubernetes node name is injected from spec.nodeName. Zone and externalIP are
-  # optional env overrides; when empty, the daemon reads the current Node labels.
-  zone: ""
-  externalIP: ""
+  # -- Node label that marks a node as Thunder-eligible. The daemon only schedules onto nodes where this is "true".
+  thunderLabel: thundercompute.com/node
+  # -- Node label carrying the Thunder zone. Required on every Thunder node.
   zoneLabel: topology.kubernetes.io/zone
-  externalIPLabel: thundercompute.com/external-ip
+  # -- Node label that overrides the address Thunder clients use to reach a node. Optional; the node's own IP is used when it is absent.
+  advertisedIPLabel: thundercompute.com/advertised-ip
+
+## nvidia
 
 nvidia:
-  minDriverVersion: "535.104.05"
+  # -- Minimum NVIDIA driver version the daemon will enroll. A node running an older driver fails at startup rather than serving GPUs.
+  minDriverVersion: "610"
+  # -- Host path to libcuda, bind-mounted into containers that claim a GPU.
   libcudaPath: /usr/lib/x86_64-linux-gnu/libcuda.so.1
+  # -- Host path to the NVIDIA Management Library, bind-mounted into containers that claim a GPU.
   libnvidiaMLPath: /usr/lib/x86_64-linux-gnu/libnvidia-ml.so.1
+  # -- Host path to nvidia-smi, bind-mounted into containers that claim a GPU.
   nvidiaSMIPath: /usr/bin/nvidia-smi
 
-hostRoot: /host
-hostTargetPID: "1"
+## kubelet and container runtime
 
-dra:
-  enabled: true
-  driverName: vgpu.thundercompute.com
-  thunderClientNamespace: thunder-system
-  kubeletPluginDir: /var/lib/kubelet/plugins/vgpu.thundercompute.com
-  kubeletRegistrarDir: /var/lib/kubelet/plugins_registry
-
-deviceClass:
-  enabled: true
-  name: thunder-vgpu
-
+kubelet:
+  # -- Parent directory for kubelet plugin sockets. The driver gets its own subdirectory. Distributions that move the kubelet root need this changed. (Example: "/var/lib/rancher/k3s/agent/kubelet/plugins")
+  pluginDirRoot: /var/lib/kubelet/plugins
+  # -- Directory the kubelet watches for plugin registration.
+  registrarDir: /var/lib/kubelet/plugins_registry
 cdi:
+  # -- Directory the daemon writes CDI specs to. Must be a directory the container runtime reads.
   specDir: /var/run/cdi
 
-nodeSelector:
-  thundercompute.com/node: "true"
-  nvidia.com/gpu.present: "true"
+## tests
 
-nodeLabelKeys:
-  externalIP: thundercompute.com/external-ip
-  thunderNode: thundercompute.com/node
-  thunderReady: thundercompute.com/node-ready
-  thunderGPUCount: thundercompute.com/gpu-count
-  thunderDriverVersion: thundercompute.com/gpu-driver-version
-  zone: topology.kubernetes.io/zone
-  nvidiaGPUPresent: nvidia.com/gpu.present
-  nvidiaGPUCount: nvidia.com/gpu.count
-  nvidiaGPUProduct: nvidia.com/gpu.product
-
-tolerations: []
-affinity: {}
-
-podAnnotations: {}
-podLabels: {}
-
-resources: {}
+tests:
+  # -- Setting that renders the `helm test` hook, which waits for the operator to publish GPU inventory.
+  enabled: true
+  image:
+    # -- Repository for the test image. It only needs kubectl on PATH.
+    repository: registry.k8s.io/kubectl
+    # -- Tag for the test image.
+    tag: v1.34.0
+    # -- Pull policy for the test image. (Options: "Always", "IfNotPresent", "Never")
+    pullPolicy: IfNotPresent
+  # -- How long `helm test` waits for inventory to appear. Raise it if reconcileInterval is raised.
+  timeoutSeconds: 120

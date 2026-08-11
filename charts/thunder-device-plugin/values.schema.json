@@ -1,0 +1,342 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "thunder-device-plugin values",
+  "description": "Values for the Thunder Compute DRA device plugin chart.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "driverName",
+    "thunder",
+    "operator",
+    "daemon",
+    "node",
+    "nvidia",
+    "kubelet",
+    "cdi",
+    "tests"
+  ],
+  "definitions": {
+    "labelKey": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^([a-z0-9]([-a-z0-9.]*[a-z0-9])?/)?[A-Za-z0-9]([-A-Za-z0-9_.]*[A-Za-z0-9])?$",
+      "description": "A Kubernetes label key, optionally prefixed with a DNS subdomain."
+    },
+    "absolutePath": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^/",
+      "description": "An absolute filesystem path on the node."
+    },
+    "image": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "repository",
+        "tag",
+        "pullPolicy"
+      ],
+      "properties": {
+        "repository": {
+          "type": "string",
+          "minLength": 1
+        },
+        "tag": {
+          "type": "string",
+          "minLength": 1
+        },
+        "pullPolicy": {
+          "enum": [
+            "Always",
+            "IfNotPresent",
+            "Never"
+          ]
+        }
+      }
+    },
+    "stringMap": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "tolerations": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "workload": {
+      "type": "object",
+      "properties": {
+        "podAnnotations": {
+          "$ref": "#/definitions/stringMap"
+        },
+        "podLabels": {
+          "$ref": "#/definitions/stringMap"
+        },
+        "nodeSelector": {
+          "$ref": "#/definitions/stringMap"
+        },
+        "tolerations": {
+          "$ref": "#/definitions/tolerations"
+        },
+        "affinity": {
+          "type": "object"
+        },
+        "resources": {
+          "type": "object"
+        }
+      }
+    }
+  },
+  "properties": {
+    "nameOverride": {
+      "type": "string"
+    },
+    "fullnameOverride": {
+      "type": "string"
+    },
+    "imagePullSecrets": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "driverName": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$",
+      "description": "DRA driver name."
+    },
+    "thunder": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "secretName",
+        "apiURL"
+      ],
+      "properties": {
+        "secretName": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Existing Secret holding THUNDER_API_TOKEN. Must exist before install."
+        },
+        "apiURL": {
+          "type": "string",
+          "pattern": "^https?://"
+        },
+        "telemetryURL": {
+          "type": "string",
+          "pattern": "^https?://",
+          "description": "Telemetry collector written into each container's Thunder client config."
+        },
+        "installURL": {
+          "type": "string",
+          "pattern": "^(https?://.*)?$",
+          "description": "Installer the daemon reads the pinned libthunder.so digest from. Empty derives <artifactBaseURL>/install.sh."
+        },
+        "artifactBaseURL": {
+          "type": "string",
+          "pattern": "^https?://",
+          "description": "Host the Thunder client artifacts (libthunder.so, install.sh) are downloaded from."
+        }
+      }
+    },
+    "operator": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/workload"
+        }
+      ],
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "enabled",
+        "image",
+        "reconcileInterval",
+        "extendedResourcePrefix",
+        "orphanGracePeriod"
+      ],
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "image": {
+          "$ref": "#/definitions/image"
+        },
+        "reconcileInterval": {
+          "type": "string",
+          "pattern": "^[0-9]+(ns|us|ms|s|m|h)$",
+          "description": "Go duration between inventory reconciles, e.g. 60s."
+        },
+        "extendedResourcePrefix": {
+          "type": "string",
+          "pattern": "^$|^[a-z0-9]([-a-z0-9.]*[a-z0-9])?/[A-Za-z0-9][-A-Za-z0-9_.]*$",
+          "description": "Domain-qualified prefix for per-GPU-model extended resources. Empty publishes classes without them."
+        },
+        "podAnnotations": {
+          "$ref": "#/definitions/stringMap"
+        },
+        "podLabels": {
+          "$ref": "#/definitions/stringMap"
+        },
+        "nodeSelector": {
+          "$ref": "#/definitions/stringMap"
+        },
+        "tolerations": {
+          "$ref": "#/definitions/tolerations"
+        },
+        "affinity": {
+          "type": "object"
+        },
+        "resources": {
+          "type": "object"
+        },
+        "orphanGracePeriod": {
+          "type": "string",
+          "pattern": "^[0-9]+(ns|us|ms|s|m|h)$",
+          "description": "Go duration a client resource may outlive its ResourceClaim before being revoked and removed."
+        }
+      }
+    },
+    "daemon": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/workload"
+        }
+      ],
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "image"
+      ],
+      "properties": {
+        "image": {
+          "$ref": "#/definitions/image"
+        },
+        "podAnnotations": {
+          "$ref": "#/definitions/stringMap"
+        },
+        "podLabels": {
+          "$ref": "#/definitions/stringMap"
+        },
+        "nodeSelector": {
+          "$ref": "#/definitions/stringMap"
+        },
+        "tolerations": {
+          "$ref": "#/definitions/tolerations"
+        },
+        "affinity": {
+          "type": "object"
+        },
+        "resources": {
+          "type": "object"
+        }
+      }
+    },
+    "node": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "thunderLabel",
+        "zoneLabel",
+        "advertisedIPLabel"
+      ],
+      "properties": {
+        "thunderLabel": {
+          "$ref": "#/definitions/labelKey"
+        },
+        "zoneLabel": {
+          "$ref": "#/definitions/labelKey"
+        },
+        "advertisedIPLabel": {
+          "$ref": "#/definitions/labelKey"
+        }
+      }
+    },
+    "nvidia": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "minDriverVersion",
+        "libcudaPath",
+        "libnvidiaMLPath",
+        "nvidiaSMIPath"
+      ],
+      "properties": {
+        "minDriverVersion": {
+          "type": "string",
+          "pattern": "^[0-9]+(\\.[0-9]+)*$"
+        },
+        "libcudaPath": {
+          "$ref": "#/definitions/absolutePath"
+        },
+        "libnvidiaMLPath": {
+          "$ref": "#/definitions/absolutePath"
+        },
+        "nvidiaSMIPath": {
+          "$ref": "#/definitions/absolutePath"
+        }
+      }
+    },
+    "kubelet": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "pluginDirRoot",
+        "registrarDir"
+      ],
+      "properties": {
+        "pluginDirRoot": {
+          "$ref": "#/definitions/absolutePath"
+        },
+        "registrarDir": {
+          "$ref": "#/definitions/absolutePath"
+        }
+      }
+    },
+    "cdi": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "specDir"
+      ],
+      "properties": {
+        "specDir": {
+          "$ref": "#/definitions/absolutePath"
+        }
+      }
+    },
+    "tests": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "enabled",
+        "image",
+        "timeoutSeconds"
+      ],
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "image": {
+          "$ref": "#/definitions/image"
+        },
+        "timeoutSeconds": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    }
+  }
+}

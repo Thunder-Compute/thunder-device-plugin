@@ -1,0 +1,52 @@
+{{ .Chart.Name }} {{ .Chart.Version }} (app {{ .Chart.AppVersion }}) installed into namespace {{ .Release.Namespace }}.
+
+  operator  {{ if .Values.operator.enabled }}enabled{{ else }}DISABLED - no GPUs will be advertised{{ end }}
+  daemon    on nodes labelled {{ .Values.node.thunderLabel }}=true
+  driver    {{ .Values.driverName }}
+
+1. Wait for both components to become ready:
+
+     kubectl -n {{ .Release.Namespace }} rollout status daemonset/{{ include "thunder-device-plugin.fullname" . }}
+{{- if .Values.operator.enabled }}
+     kubectl -n {{ .Release.Namespace }} rollout status deployment/{{ include "thunder-device-plugin.fullname" . }}-operator
+{{- end }}
+
+2. See which GPU models the cluster can serve. One class per model appears as
+   Thunder inventory is read:
+
+     kubectl get deviceclasses -l app.kubernetes.io/name=thunder-dra-driver \
+       -o custom-columns=CLASS:.metadata.name,RESOURCE:.spec.extendedResourceName
+{{- if .Values.tests.enabled }}
+
+   Or run the packaged smoke test:
+
+     helm test {{ .Release.Name }} --namespace {{ .Release.Namespace }}
+{{- end }}
+
+3. Request GPUs. Every request names a GPU model.
+{{- if .Values.operator.extendedResourcePrefix }}
+
+   As an extended resource (needs Kubernetes 1.36+):
+
+     resources:
+       limits:
+         {{ .Values.operator.extendedResourcePrefix }}<gpu-model>: 2
+{{- end }}
+
+   Or as a ResourceClaim, which works on any supported cluster:
+
+     apiVersion: resource.k8s.io/v1
+     kind: ResourceClaimTemplate
+     metadata:
+       name: thunder-pod-gpu
+     spec:
+       spec:
+         devices:
+           requests:
+             - name: gpu
+               exactly:
+                 deviceClassName: thunder-gpu-<gpu-model>
+                 allocationMode: ExactCount
+                 count: 2          # one device per GPU
+
+Docs: https://github.com/Thunder-Compute/thunder-device-plugin#readme

@@ -1,12 +1,12 @@
-driverName: vgpu.thundercompute.com
-deviceClassName: thunder-vgpu
+driverName: thundercompute.com
+deviceClassPrefix: thunder-gpu-
 
 gpu:
   type: A6000
-  count: "1"
+  count: 1
 
 requestName: gpu
-claimName: vgpu
+claimName: gpu
 
 image:
   repository: ubuntu
@@ -32,7 +32,7 @@ command:
 args:
   - |
     set -eux
-    echo "Thunder vGPU DRA pod started"
+    echo "Thunder GPU DRA pod started"
     echo "PATH=${PATH:-}"
     echo "LD_LIBRARY_PATH=${LD_LIBRARY_PATH:-}"
     echo "THUNDER_RESOURCE_CLAIM_UID=${THUNDER_RESOURCE_CLAIM_UID:-}"
@@ -41,4 +41,7 @@ args:
     command -v nvidia-smi
     nvidia-smi || true
     find /usr /lib -name 'libcuda.so*' -o -name 'libnvidia-ml.so*' 2>/dev/null | sort || true
-    sleep infinity
+    # exec, so PID 1 is sleep and not the shell. A shell waiting on a child
+    # neither forwards SIGTERM nor exits, so without this the pod ignores
+    # deletion and waits out the full termination grace period.
+    exec sleep infinity

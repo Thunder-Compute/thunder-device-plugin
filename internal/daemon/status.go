@@ -6,10 +6,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
-	"time"
 )
-
-const ThunderStatusInterval = 10 * time.Second
 
 type thunderStatus struct {
 	Service struct {
@@ -36,26 +33,6 @@ type thunderStatus struct {
 		Action   string `json:"action"`
 	} `json:"diagnostics"`
 	RecentLogs []string `json:"recentLogs"`
-}
-
-func monitorThunderStatus(ctx context.Context, runner commandRunner, interval time.Duration) error {
-	log.Printf("starting thunder status monitor: interval=%s", interval)
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-ticker.C:
-			status, err := getThunderStatus(ctx, runner)
-			if err != nil {
-				log.Printf("thunder status check failed: %v", err)
-				continue
-			}
-			logThunderStatus("periodic", status)
-		}
-	}
 }
 
 func getThunderStatus(ctx context.Context, runner commandRunner) (thunderStatus, error) {

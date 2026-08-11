@@ -1,6 +1,27 @@
 apiVersion: v2
-name: thunder-vgpu-test-vm
-description: Test KubeVirt VM requesting Thunder vGPU resources through Kubernetes DRA.
+name: thunder-gpu-test-vm
+description: Test KubeVirt VM requesting a Thunder GPU through Kubernetes DRA
 type: application
 version: 0.1.0
 appVersion: "0.1.0"
+
+kubeVersion: ">=1.34.0-0"
+
+home: https://www.thundercompute.com
+sources:
+  - https://github.com/Thunder-Compute/thunder-device-plugin
+
+keywords:
+  - gpu
+  - dra
+  - test
+  - kubevirt
+
+maintainers:
+  - name: Thunder Compute
+    email: support@thundercompute.com
+    url: https://github.com/Thunder-Compute
+
+annotations:
+  # Not a deployable workload: this chart exists to exercise the driver.
+  artifacthub.io/prerelease: "true"

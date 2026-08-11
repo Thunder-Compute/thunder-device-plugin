@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -15,17 +16,15 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
+
+	"github.com/Thunder-Compute/thunder-device-plugin/internal/thunderclient"
 )
 
-var ThunderClientGVR = schema.GroupVersionResource{
-	Group:    "thundercompute.com",
-	Version:  "v1alpha1",
-	Resource: "clients",
-}
+// ThunderClientGVR addresses the per-claim ThunderClient resource.
+var ThunderClientGVR = thunderclient.GVR
 
 type KubernetesThunderClientStore struct {
 	Client    dynamic.Interface
@@ -65,24 +64,71 @@ func (s *KubernetesThunderClientStore) Upsert(ctx context.Context, client Thunde
 	resource := s.Client.Resource(ThunderClientGVR).Namespace(s.namespace())
 	current, err := resource.Get(ctx, obj.GetName(), metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
+		obj.SetFinalizers([]string{thunderclient.Finalizer})
 		_, err = resource.Create(ctx, obj, metav1.CreateOptions{})
 		return err
 	}
 	if err != nil {
 		return err
 	}
+	// An update replaces metadata wholesale, so carry over whatever finalizers
+	// the resource already has and make sure ours is among them.
+	obj.SetFinalizers(withFinalizer(current.GetFinalizers()))
 	obj.SetResourceVersion(current.GetResourceVersion())
 	_, err = resource.Update(ctx, obj, metav1.UpdateOptions{})
 	return err
 }
 
+// withFinalizer returns finalizers including ours, without duplicating it.
+func withFinalizer(finalizers []string) []string {
+	for _, finalizer := range finalizers {
+		if finalizer == thunderclient.Finalizer {
+			return finalizers
+		}
+	}
+	return append(append([]string(nil), finalizers...), thunderclient.Finalizer)
+}
+
+// withoutFinalizer returns finalizers with ours removed.
+func withoutFinalizer(finalizers []string) []string {
+	kept := make([]string, 0, len(finalizers))
+	for _, finalizer := range finalizers {
+		if finalizer != thunderclient.Finalizer {
+			kept = append(kept, finalizer)
+		}
+	}
+	return kept
+}
+
+// Delete releases the finalizer and removes the resource. The caller has
+// already revoked the Thunder enrollment by this point, so holding the resource
+// any longer would serve no purpose.
 func (s *KubernetesThunderClientStore) Delete(ctx context.Context, claimUID types.UID) error {
 	if s.Client == nil {
 		return fmt.Errorf("dynamic client is required")
 	}
-	err := s.Client.Resource(ThunderClientGVR).Namespace(s.namespace()).Delete(ctx, ThunderClientName(claimUID), metav1.DeleteOptions{})
-	if apierrors.IsNotFound(err) {
+	resource := s.Client.Resource(ThunderClientGVR).Namespace(s.namespace())
+	name := ThunderClientName(claimUID)
+
+	current, err := resource.Get(ctx, name, metav1.GetOptions{})
+	switch {
+	case apierrors.IsNotFound(err):
 		return ErrNotFound
+	case err != nil:
+		return err
+	}
+
+	if kept := withoutFinalizer(current.GetFinalizers()); len(kept) != len(current.GetFinalizers()) {
+		updated := current.DeepCopy()
+		updated.SetFinalizers(kept)
+		if _, err := resource.Update(ctx, updated, metav1.UpdateOptions{}); err != nil && !apierrors.IsNotFound(err) {
+			return fmt.Errorf("release finalizer on ThunderClient %s: %w", name, err)
+		}
+	}
+
+	err = resource.Delete(ctx, name, metav1.DeleteOptions{})
+	if apierrors.IsNotFound(err) {
+		return nil
 	}
 	return err
 }
@@ -111,10 +157,10 @@ func thunderClientObject(client ThunderClient, namespace string) *unstructured.U
 			"name":      ThunderClientName(client.ClaimUID),
 			"namespace": namespace,
 			"labels": map[string]any{
-				"app.kubernetes.io/name":                  "thunder-dra-driver",
-				"vgpu.thundercompute.com/claim-uid":       string(client.ClaimUID),
-				"vgpu.thundercompute.com/gpu-type":        strings.ToLower(client.GPUType),
-				"vgpu.thundercompute.com/claim-namespace": client.ClaimNamespace,
+				"app.kubernetes.io/name": "thunder-dra-driver",
+				claimUIDLabelName:        string(client.ClaimUID),
+				gpuTypeLabelName:         strings.ToLower(client.GPUType),
+				claimNamespaceLabelName:  client.ClaimNamespace,
 			},
 		},
 		"spec": map[string]any{
@@ -125,18 +171,17 @@ func thunderClientObject(client ThunderClient, namespace string) *unstructured.U
 			"gpuCount":       client.GPUCount,
 		},
 		"status": map[string]any{
-			"nodeName":           client.NodeName,
-			"zone":               client.Zone,
-			"requestName":        client.RequestName,
-			"poolName":           client.PoolName,
-			"deviceName":         client.DeviceName,
-			"cdiName":            client.CDIName,
-			"enrollmentTokenID":  client.EnrollmentTokenID,
-			"guestNamespace":     client.GuestNamespace,
-			"guestConfigMapName": client.GuestConfigMap,
-			"guestSecretName":    client.GuestSecret,
-			"createdAt":          client.CreatedAt.Format(time.RFC3339),
-			"updatedAt":          client.UpdatedAt.Format(time.RFC3339),
+			"nodeName":          client.NodeName,
+			"zone":              client.Zone,
+			"requestName":       client.RequestName,
+			"poolName":          client.PoolName,
+			"deviceName":        client.DeviceName,
+			"cdiName":           client.CDIName,
+			"enrollmentTokenID": client.EnrollmentTokenID,
+			"guestNamespace":    client.GuestNamespace,
+			"guestSecretName":   client.GuestSecret,
+			"createdAt":         client.CreatedAt.Format(time.RFC3339),
+			"updatedAt":         client.UpdatedAt.Format(time.RFC3339),
 		},
 	}}
 	if client.ShareID != nil {
@@ -173,7 +218,6 @@ func thunderClientFromObject(obj *unstructured.Unstructured) *ThunderClient {
 	client.CDIName = nestedString(obj, "status", "cdiName")
 	client.EnrollmentTokenID = nestedString(obj, "status", "enrollmentTokenID")
 	client.GuestNamespace = nestedString(obj, "status", "guestNamespace")
-	client.GuestConfigMap = nestedString(obj, "status", "guestConfigMapName")
 	client.GuestSecret = nestedString(obj, "status", "guestSecretName")
 	if shareID := nestedString(obj, "status", "shareID"); shareID != "" {
 		uid := types.UID(shareID)
@@ -222,7 +266,7 @@ func stringFromMap(values map[string]any, key string) string {
 const (
 	ThunderGuestInstallScriptKey = "install-thunder-client.sh"
 	ThunderGuestSecretTokenKey   = "enrollment-token"
-	ThunderGuestSecretMountPath  = "/mnt/thunder-secret/enrollment-token"
+	ThunderGuestTokenPath        = "/mnt/thunder-setup/enrollment-token"
 )
 
 type KubernetesGuestConfigStore struct {
@@ -246,39 +290,25 @@ func (s *KubernetesGuestConfigStore) Create(ctx context.Context, allocation Allo
 	}
 
 	artifacts := GuestArtifacts{
-		Namespace:     namespace,
-		ConfigMapName: ThunderGuestConfigMapName(allocation.ClaimName),
-		SecretName:    ThunderGuestSecretName(allocation.ClaimName),
-	}
-	labels := guestArtifactLabels(allocation)
-
-	configMap := &corev1.ConfigMap{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      artifacts.ConfigMapName,
-			Namespace: artifacts.Namespace,
-			Labels:    labels,
-		},
-		Data: map[string]string{
-			ThunderGuestInstallScriptKey: thunderGuestInstallScript(installCommand),
-		},
-	}
-	if err := upsertConfigMap(ctx, s.Client, configMap); err != nil {
-		return GuestArtifacts{}, err
+		Namespace:  namespace,
+		SecretName: ThunderGuestSetupSecretName(allocation.ClaimName),
 	}
 
+	// The token and the script that spends it travel together in one Secret,
+	// so a VM mounts one filesystem rather than two.
 	secret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      artifacts.SecretName,
 			Namespace: artifacts.Namespace,
-			Labels:    labels,
+			Labels:    guestArtifactLabels(allocation),
 		},
 		Type: corev1.SecretTypeOpaque,
 		Data: map[string][]byte{
-			ThunderGuestSecretTokenKey: []byte(token),
+			ThunderGuestSecretTokenKey:   []byte(token),
+			ThunderGuestInstallScriptKey: []byte(thunderGuestInstallScript(installCommand)),
 		},
 	}
 	if err := upsertSecret(ctx, s.Client, secret); err != nil {
-		_ = deleteConfigMap(ctx, s.Client, artifacts.Namespace, artifacts.ConfigMapName)
 		return GuestArtifacts{}, err
 	}
 	return artifacts, nil
@@ -292,21 +322,16 @@ func (s *KubernetesGuestConfigStore) Remove(ctx context.Context, artifacts Guest
 	if namespace == "" {
 		return nil
 	}
-	if err := deleteConfigMap(ctx, s.Client, namespace, artifacts.ConfigMapName); err != nil {
-		return err
-	}
 	if err := deleteSecret(ctx, s.Client, namespace, artifacts.SecretName); err != nil {
 		return err
 	}
 	return nil
 }
 
-func ThunderGuestConfigMapName(claimName string) string {
-	return thunderGuestArtifactName(claimName, "thunder-configmap")
-}
-
-func ThunderGuestSecretName(claimName string) string {
-	return thunderGuestArtifactName(claimName, "thunder-secret")
+// ThunderGuestSetupSecretName is the Secret a VM mounts to set itself up as
+// a Thunder client.
+func ThunderGuestSetupSecretName(claimName string) string {
+	return thunderGuestArtifactName(claimName, "thunder-setup")
 }
 
 func thunderGuestArtifactName(claimName string, suffix string) string {
@@ -326,14 +351,21 @@ func thunderGuestArtifactName(claimName string, suffix string) string {
 
 func guestArtifactLabels(allocation Allocation) map[string]string {
 	return map[string]string{
-		"app.kubernetes.io/name":                  "thunder-dra-driver",
-		"app.kubernetes.io/component":             "guest-config",
-		"vgpu.thundercompute.com/claim-uid":       string(allocation.ClaimUID),
-		"vgpu.thundercompute.com/claim-namespace": allocation.ClaimNamespace,
-		"vgpu.thundercompute.com/claim-name":      allocation.ClaimName,
+		"app.kubernetes.io/name":      "thunder-dra-driver",
+		"app.kubernetes.io/component": "guest-config",
+		claimUIDLabelName:             string(allocation.ClaimUID),
+		claimNamespaceLabelName:       allocation.ClaimNamespace,
+		claimNameLabelName:            allocation.ClaimName,
 	}
 }
 
+// thunderGuestInstallScript is what a VM guest runs to become a Thunder client.
+//
+// It installs the Thunder client and nothing else. A client does not need an
+// NVIDIA driver: libthunder intercepts CUDA in the guest and carries it to a
+// GPU server over the network, and the driver lives on that server. Installing
+// one here would pin the guest to a distribution and a driver version, and add
+// a kernel module build to every VM boot, for something no workload uses.
 func thunderGuestInstallScript(installCommand string) string {
 	installCommand = strings.TrimSpace(installCommand)
 	if installCommand == "" {
@@ -349,31 +381,8 @@ if [[ ! -s "${TOKEN_FILE}" ]]; then
 fi
 export %s="$(cat "${TOKEN_FILE}")"
 
-wget -O cuda-keyring_1.1-1_all.deb https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb
-sudo dpkg -i cuda-keyring_1.1-1_all.deb
-sudo apt-get update
-sudo apt-get install -y nvidia-driver-pinning-610.43.02
-sudo apt-get install -y cuda-drivers
-
 %s
-`, ThunderGuestSecretMountPath, ThunderEnrollmentTokenEnv, installCommand)
-}
-
-func upsertConfigMap(ctx context.Context, client kubernetes.Interface, desired *corev1.ConfigMap) error {
-	resource := client.CoreV1().ConfigMaps(desired.Namespace)
-	current, err := resource.Get(ctx, desired.Name, metav1.GetOptions{})
-	if apierrors.IsNotFound(err) {
-		_, err = resource.Create(ctx, desired, metav1.CreateOptions{})
-		return err
-	}
-	if err != nil {
-		return err
-	}
-	updated := current.DeepCopy()
-	updated.Labels = desired.Labels
-	updated.Data = desired.Data
-	_, err = resource.Update(ctx, updated, metav1.UpdateOptions{})
-	return err
+`, ThunderGuestTokenPath, ThunderEnrollmentTokenEnv, installCommand)
 }
 
 func upsertSecret(ctx context.Context, client kubernetes.Interface, desired *corev1.Secret) error {
@@ -394,18 +403,6 @@ func upsertSecret(ctx context.Context, client kubernetes.Interface, desired *cor
 	return err
 }
 
-func deleteConfigMap(ctx context.Context, client kubernetes.Interface, namespace string, name string) error {
-	name = strings.TrimSpace(name)
-	if name == "" {
-		return nil
-	}
-	err := client.CoreV1().ConfigMaps(namespace).Delete(ctx, name, metav1.DeleteOptions{})
-	if apierrors.IsNotFound(err) {
-		return nil
-	}
-	return err
-}
-
 func deleteSecret(ctx context.Context, client kubernetes.Interface, namespace string, name string) error {
 	name = strings.TrimSpace(name)
 	if name == "" {
@@ -423,7 +420,10 @@ const (
 	ThunderClientInstallCommandEnv = "THUNDER_CLIENT_INSTALL_COMMAND"
 )
 
-const cdiHookTimeoutSeconds = 300
+// cdiHookTimeoutSeconds is what the runtime allows the hook, kept above the
+// hook's own cdiHookTimeout so the hook reports its failure rather than being
+// killed mid-write.
+const cdiHookTimeoutSeconds = 120
 
 type FileCDIDeviceStore struct {
 	SpecDir  string
@@ -434,6 +434,22 @@ type FileCDIDeviceStore struct {
 	LibNVMLPath          string
 	NVSMIPath            string
 	ClientInstallCommand string
+
+	// HookPath is the host executable the container runtime runs while
+	// creating a container. Empty disables the hook, which leaves the
+	// container to supply its own Thunder client.
+	HookPath string
+	// CacheDir is where the hook keeps this node's copy of libthunder.so.
+	CacheDir string
+	// The hook is told where to enrol and where to fetch the library, since
+	// it runs as a bare process on the host with none of the daemon's config.
+	CentralURL       string
+	TelemetryURL     string
+	InstallURL       string
+	ArtifactBaseURL  string
+	LibthunderURL    string
+	LibthunderSHA256 string
+	CABundlePath     string
 }
 
 func NewFileCDIDeviceStore(specDir string) *FileCDIDeviceStore {
@@ -455,16 +471,28 @@ func (s *FileCDIDeviceStore) Create(ctx context.Context, allocation Allocation, 
 	if err := os.MkdirAll(stateDir, 0700); err != nil {
 		return "", err
 	}
+	// The hook reads the token from disk rather than taking it on a command
+	// line, where it would be visible in the CDI spec and in host process
+	// listings for as long as the container is being created.
+	if err := os.WriteFile(s.tokenPath(deviceName), []byte(token+"\n"), 0600); err != nil {
+		_ = os.RemoveAll(stateDir)
+		return "", err
+	}
+
+	containerEdits := map[string]any{
+		"env":    s.containerEnv(qualifiedName, allocation, token),
+		"mounts": s.mounts(),
+	}
+	if hooks := s.hooks(deviceName, allocation); len(hooks) > 0 {
+		containerEdits["hooks"] = hooks
+	}
 	spec := map[string]any{
 		"cdiVersion": "0.6.0",
 		"kind":       kind,
 		"devices": []map[string]any{
 			{
-				"name": deviceName,
-				"containerEdits": map[string]any{
-					"env":    s.containerEnv(qualifiedName, allocation, token),
-					"mounts": s.mounts(),
-				},
+				"name":           deviceName,
+				"containerEdits": containerEdits,
 			},
 		},
 	}
@@ -491,15 +519,45 @@ func (s *FileCDIDeviceStore) Create(ctx context.Context, allocation Allocation, 
 	return qualifiedName, nil
 }
 
+// StagedClientID reports the Thunder client the CDI hook enrolled for this
+// device. The hook caches the exchanged config in the claim's state dir, and
+// the client ID in it is the only record of the enrollment the daemon has: the
+// exchange happens in the hook, on container create, long after prepare.
+//
+// An empty string means no container ever started for this claim, so no client
+// was created and there is nothing to revoke.
+func (s *FileCDIDeviceStore) StagedClientID(qualifiedName string) string {
+	if strings.TrimSpace(qualifiedName) == "" {
+		return ""
+	}
+	deviceName := cdiDeviceNameFromQualifiedName(qualifiedName)
+	raw, err := os.ReadFile(filepath.Join(s.stateDir(deviceName), thunderConfigFile))
+	if err != nil {
+		return ""
+	}
+	var config ThunderClientConfig
+	if err := json.Unmarshal(raw, &config); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(config.ClientID)
+}
+
 func (s *FileCDIDeviceStore) Remove(ctx context.Context, qualifiedName string) error {
 	if strings.TrimSpace(qualifiedName) == "" {
 		return nil
+	}
+	// Wait for any hook still staging this claim. Deleting the state dir
+	// underneath one would fail that container with a confusing missing-token
+	// error instead of letting it finish and be torn down cleanly.
+	deviceName := cdiDeviceNameFromQualifiedName(qualifiedName)
+	if unlock, err := lockStateDir(s.stateDir(deviceName)); err == nil {
+		defer unlock()
 	}
 	specErr := os.Remove(s.specPath(qualifiedName))
 	if specErr != nil && !os.IsNotExist(specErr) {
 		return specErr
 	}
-	if err := os.RemoveAll(s.stateDir(cdiDeviceNameFromQualifiedName(qualifiedName))); err != nil && !os.IsNotExist(err) {
+	if err := os.RemoveAll(s.stateDir(deviceName)); err != nil && !os.IsNotExist(err) {
 		return err
 	}
 	return nil
@@ -556,29 +614,78 @@ func (s *FileCDIDeviceStore) stateDir(deviceName string) string {
 	return filepath.Join(s.stateRoot(), deviceName)
 }
 
+// tokenPath is where Create stages the enrollment token for the hook.
 func (s *FileCDIDeviceStore) tokenPath(deviceName string) string {
-	return filepath.Join(s.stateDir(deviceName), "enrollment-token")
+	return filepath.Join(s.stateDir(deviceName), thunderTokenFile)
 }
 
-func (s *FileCDIDeviceStore) hookPath(deviceName string) string {
-	return filepath.Join(s.stateDir(deviceName), "install-client.sh")
+// hooks is the createRuntime hook that stages the Thunder client into the
+// container being created. It runs before pivot_root, so it is the one place
+// that can write into a container filesystem no matter what the image contains
+// — no shell, no curl and no root required of the workload.
+//
+// createRuntime rather than createContainer: the two differ only in which
+// namespaces they run in, and createContainer runs in the container's. That
+// leaves the hook resolving DNS against the host's resolv.conf inside the
+// container's empty network namespace, so every fetch fails with connection
+// refused. createRuntime runs in the runtime's namespaces, where the node's
+// network works, and still sees the rootfs at <bundle>/rootfs.
+func (s *FileCDIDeviceStore) hooks(deviceName string, allocation Allocation) []map[string]any {
+	hookPath := strings.TrimSpace(s.HookPath)
+	if hookPath == "" {
+		return nil
+	}
+
+	args := []string{hookPath, CDIHookCommand, "--state-dir", s.stateDir(deviceName)}
+	for flag, value := range map[string]string{
+		"--central-url":       s.CentralURL,
+		"--telemetry-url":     s.TelemetryURL,
+		"--install-url":       s.InstallURL,
+		"--artifact-base-url": s.ArtifactBaseURL,
+		"--libthunder-url":    s.LibthunderURL,
+		"--libthunder-sha256": s.LibthunderSHA256,
+		"--cache-dir":         s.CacheDir,
+		"--ca-bundle":         s.CABundlePath,
+		"--client-name":       thunderClientName(allocation),
+	} {
+		if strings.TrimSpace(value) != "" {
+			args = append(args, flag, value)
+		}
+	}
+	// Map iteration is unordered and this ends up in a file on disk, so sort
+	// the flag pairs to keep a rewritten spec byte-identical.
+	sortArgPairs(args[4:])
+
+	return []map[string]any{
+		{
+			"hookName": "createRuntime",
+			"path":     hookPath,
+			"args":     args,
+			"timeout":  cdiHookTimeoutSeconds,
+		},
+	}
 }
 
-func (s *FileCDIDeviceStore) hookScript(tokenPath string) string {
-	return fmt.Sprintf(`#!/bin/sh
-set -eu
-TOKEN_FILE=%s
-cleanup() {
-  rm -f "$TOKEN_FILE"
+// thunderClientName is what the enrollment is called in Thunder. The pod name
+// makes an enrollment traceable to the workload holding it; the claim name is
+// the fallback for a claim nothing has reserved yet.
+func thunderClientName(allocation Allocation) string {
+	if name := strings.TrimSpace(allocation.Consumer.Name); name != "" {
+		return name
+	}
+	return strings.TrimSpace(allocation.ClaimName)
 }
-trap cleanup EXIT
-if [ ! -s "$TOKEN_FILE" ]; then
-  exit 0
-fi
-%s="$(cat "$TOKEN_FILE")"
-export %s
-%s
-`, shellQuote(tokenPath), ThunderEnrollmentTokenEnv, ThunderEnrollmentTokenEnv, strings.TrimSpace(s.ClientInstallCommand))
+
+// sortArgPairs sorts a flat --flag/value slice by flag, keeping pairs together.
+func sortArgPairs(args []string) {
+	pairs := make([][2]string, 0, len(args)/2)
+	for i := 0; i+1 < len(args); i += 2 {
+		pairs = append(pairs, [2]string{args[i], args[i+1]})
+	}
+	sort.Slice(pairs, func(i, j int) bool { return pairs[i][0] < pairs[j][0] })
+	for i, pair := range pairs {
+		args[i*2], args[i*2+1] = pair[0], pair[1]
+	}
 }
 
 func (s *FileCDIDeviceStore) containerEnv(qualifiedName string, allocation Allocation, token string) []string {

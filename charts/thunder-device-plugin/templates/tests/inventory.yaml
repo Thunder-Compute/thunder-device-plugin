@@ -1,0 +1,36 @@
+{{- if .Values.tests.enabled }}
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ printf "%s-test-inventory" (include "thunder-device-plugin.fullname" .) | trunc 63 | trimSuffix "-" | quote }}
+  namespace: {{ .Release.Namespace | quote }}
+  labels:
+    {{- include "thunder-device-plugin.labels" . | nindent 4 }}
+    app.kubernetes.io/component: test
+  annotations:
+    helm.sh/hook: test
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  serviceAccountName: {{ include "thunder-device-plugin.fullname" . | quote }}
+  restartPolicy: Never
+  containers:
+    - name: inventory
+      image: "{{ .Values.tests.image.repository }}:{{ .Values.tests.image.tag }}"
+      imagePullPolicy: {{ .Values.tests.image.pullPolicy }}
+      # The image is distroless and has no shell, so this is a single kubectl
+      # call rather than a polling loop. `--for=create` blocks until a matching
+      # ResourceSlice exists and exits non-zero if none appears in time.
+      args:
+        - wait
+        - --for=create
+        - resourceslices
+        - --selector=app.kubernetes.io/name=thunder-dra-driver
+        - --timeout={{ .Values.tests.timeoutSeconds }}s
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        runAsNonRoot: true
+        runAsUser: 65532
+        capabilities:
+          drop: ["ALL"]
+{{- end }}

@@ -31,10 +31,8 @@ app.kubernetes.io/component: operator
 {{- end -}}
 
 
-{{- define "thunder-device-plugin.secretName" -}}
-{{- if .Values.thunder.existingSecret -}}
-{{- .Values.thunder.existingSecret -}}
-{{- else -}}
-{{- .Values.thunder.secretName -}}
-{{- end -}}
+{{/* The driver gets its own subdirectory under the kubelet plugin root, so the
+socket path always matches the driver name the kubelet registered. */}}
+{{- define "thunder-device-plugin.kubeletPluginDir" -}}
+{{- printf "%s/%s" (trimSuffix "/" .Values.kubelet.pluginDirRoot) .Values.driverName -}}
 {{- end -}}

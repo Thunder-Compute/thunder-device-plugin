@@ -12,9 +12,11 @@ import (
 	"strings"
 	"syscall"
 
-	"thunder-device-plugin/internal/operator"
-	thunder "thunder-device-plugin/pkg/thunder-sdk"
+	"github.com/Thunder-Compute/thunder-device-plugin/internal/operator"
+	"github.com/Thunder-Compute/thunder-device-plugin/internal/version"
+	thunder "github.com/Thunder-Compute/thunder-sdk"
 
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
@@ -26,6 +28,7 @@ func main() {
 	flag.Parse()
 
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{}))
+	logger.Info("starting thunder-dra-operator", "version", version.Get(), "revision", version.Revision())
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -46,13 +49,21 @@ func main() {
 		os.Exit(1)
 	}
 
-	inventory, err := thunderClientFromEnv()
+	// The operator reads and writes the ThunderClient custom resource, so it
+	// needs a dynamic client alongside the typed one.
+	clients, err := dynamic.NewForConfig(restConfig)
 	if err != nil {
-		logger.Error("build thunder inventory client", "error", err)
+		logger.Error("build dynamic kubernetes client", "error", err)
 		os.Exit(1)
 	}
 
-	op := operator.New(cfg, kube, inventory, logger)
+	thunderAPI, err := thunderClientFromEnv()
+	if err != nil {
+		logger.Error("build thunder api client", "error", err)
+		os.Exit(1)
+	}
+
+	op := operator.New(cfg, kube, clients, thunderAPI, logger)
 	if err := op.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 		logger.Error("operator stopped", "error", err)
 		os.Exit(1)
@@ -64,7 +75,8 @@ func thunderClientFromEnv() (*thunder.Client, error) {
 	if apiToken == "" {
 		return nil, fmt.Errorf("THUNDER_API_TOKEN is required")
 	}
-	return thunder.NewClient(os.Getenv("THUNDER_API_URL"), apiToken), nil
+	return thunder.NewClient(os.Getenv("THUNDER_API_URL"), apiToken,
+		thunder.WithUserAgent(version.UserAgent("operator"))), nil
 }
 
 func kubernetesConfig(kubeconfig string) (*rest.Config, error) {

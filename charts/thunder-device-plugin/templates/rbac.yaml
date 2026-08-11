@@ -9,7 +9,7 @@ rules:
     resources: ["nodes"]
     verbs: ["get", "list", "watch"]
   - apiGroups: [""]
-    resources: ["configmaps", "secrets"]
+    resources: ["secrets"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   - apiGroups: ["resource.k8s.io"]
     resources: ["resourceslices"]
@@ -17,6 +17,10 @@ rules:
   - apiGroups: ["resource.k8s.io"]
     resources: ["resourceclaims"]
     verbs: ["get", "list", "watch"]
+  # The operator generates one DeviceClass per GPU type it finds in inventory.
+  - apiGroups: ["resource.k8s.io"]
+    resources: ["deviceclasses"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   - apiGroups: ["thundercompute.com"]
     resources: ["clients"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
@@ -34,4 +38,4 @@ roleRef:
 subjects:
   - kind: ServiceAccount
     name: {{ include "thunder-device-plugin.fullname" . | quote }}
-    namespace: {{ .Values.namespace.name | quote }}
+    namespace: {{ .Release.Namespace | quote }}
