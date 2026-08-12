@@ -8,7 +8,6 @@ import (
 	resourcev1 "k8s.io/api/resource/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/labels"
 )
 
 const deviceClassComponent = "device-class"
@@ -130,11 +129,15 @@ func derefString(value *string) string {
 }
 
 func (o *Operator) listManagedDeviceClasses(ctx context.Context) (map[string]*resourcev1.DeviceClass, error) {
-	selector := labels.Set{
-		"app.kubernetes.io/name":       driverAppName,
-		"app.kubernetes.io/component":  deviceClassComponent,
-		"app.kubernetes.io/managed-by": "thunder-device-plugin-operator",
-	}.String()
+	// Include the pre-rename managed-by value so upgrades adopt and prune
+	// DeviceClasses written by older operator releases.
+	selector := fmt.Sprintf(
+		"app.kubernetes.io/name=%s,app.kubernetes.io/component=%s,app.kubernetes.io/managed-by in (%s,%s)",
+		driverAppName,
+		deviceClassComponent,
+		"thunder-device-plugin-operator",
+		"thunder-dra-operator",
+	)
 	list, err := o.kube.ResourceV1().DeviceClasses().List(ctx, metav1.ListOptions{LabelSelector: selector})
 	if err != nil {
 		return nil, fmt.Errorf("list DeviceClasses: %w", err)
