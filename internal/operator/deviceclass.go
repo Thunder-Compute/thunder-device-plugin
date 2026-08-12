@@ -38,7 +38,7 @@ func buildDeviceClass(cfg Config, gpuType string) *resourcev1.DeviceClass {
 			Labels: map[string]string{
 				"app.kubernetes.io/name":       driverAppName,
 				"app.kubernetes.io/component":  deviceClassComponent,
-				"app.kubernetes.io/managed-by": "thunder-dra-operator",
+				"app.kubernetes.io/managed-by": "thunder-device-plugin-operator",
 				gpuTypeLabelName:               dnsLabel(gpuType),
 			},
 		},
@@ -133,7 +133,7 @@ func (o *Operator) listManagedDeviceClasses(ctx context.Context) (map[string]*re
 	selector := labels.Set{
 		"app.kubernetes.io/name":       driverAppName,
 		"app.kubernetes.io/component":  deviceClassComponent,
-		"app.kubernetes.io/managed-by": "thunder-dra-operator",
+		"app.kubernetes.io/managed-by": "thunder-device-plugin-operator",
 	}.String()
 	list, err := o.kube.ResourceV1().DeviceClasses().List(ctx, metav1.ListOptions{LabelSelector: selector})
 	if err != nil {
