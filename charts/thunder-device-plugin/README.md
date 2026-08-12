@@ -115,7 +115,7 @@ typos and wrong types fail at install time rather than silently doing nothing.
 | Key | Type | Default | Description |
 | --- | --- | --- | --- |
 | `operator.enabled` | bool | `true` | Deploy the operator. Without it no GPUs are advertised |
-| `operator.image.repository` | string | `thundercompute/thunder-dra-operator` | Operator image |
+| `operator.image.repository` | string | `ghcr.io/thunder-compute/thunder-device-plugin/operator` | Operator image |
 | `operator.image.tag` | string | `latest` | Operator image tag |
 | `operator.image.pullPolicy` | string | `IfNotPresent` | Operator image pull policy |
 | `operator.reconcileInterval` | string | `60s` | How often Thunder inventory is polled |
@@ -132,7 +132,7 @@ typos and wrong types fail at install time rather than silently doing nothing.
 
 | Key | Type | Default | Description |
 | --- | --- | --- | --- |
-| `daemon.image.repository` | string | `thundercompute/thunder-device-plugin-daemon` | Daemon image |
+| `daemon.image.repository` | string | `ghcr.io/thunder-compute/thunder-device-plugin/daemon` | Daemon image |
 | `daemon.image.tag` | string | `latest` | Daemon image tag |
 | `daemon.image.pullPolicy` | string | `IfNotPresent` | Daemon image pull policy |
 | `daemon.podAnnotations` | object | `{}` | Annotations for daemon pods |

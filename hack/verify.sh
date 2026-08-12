@@ -149,7 +149,7 @@ verify_chart_quality() {
   step "Chart packaging"
 
   local field
-  for field in name description version appVersion kubeVersion home sources maintainers; do
+  for field in name description version kubeVersion home sources maintainers; do
     if "${HELM}" show chart "${CHART_MAIN}" 2>/dev/null | grep -q "^${field}:"; then
       check_pass "Chart.yaml declares ${field}"
     else

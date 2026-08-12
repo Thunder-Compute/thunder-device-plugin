@@ -32,7 +32,7 @@ operator:
   enabled: true
   image:
     # -- Repository for the operator image.
-    repository: thundercompute/thunder-dra-operator
+    repository: ghcr.io/thunder-compute/thunder-device-plugin/operator
     # -- Tag for the operator image.
     tag: latest
     # -- Pull policy for the operator image. (Options: "Always", "IfNotPresent", "Never")
@@ -61,7 +61,7 @@ operator:
 daemon:
   image:
     # -- Repository for the node daemon image.
-    repository: thundercompute/thunder-device-plugin-daemon
+    repository: ghcr.io/thunder-compute/thunder-device-plugin/daemon
     # -- Tag for the node daemon image.
     tag: latest
     # -- Pull policy for the node daemon image. (Options: "Always", "IfNotPresent", "Never")
