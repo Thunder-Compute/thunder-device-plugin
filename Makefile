@@ -24,9 +24,10 @@ IMAGE_TAG        ?= $(IMAGE_TIMESTAMP)
 PLATFORMS      ?= linux/amd64
 
 # Helm.
-CHART     := charts/thunder-device-plugin
-RELEASE   ?= thunder-device-plugin
-NAMESPACE ?= thunder-system
+CHART          := charts/thunder-device-plugin
+CHART_REGISTRY ?= oci://ghcr.io/thunder-compute/charts
+RELEASE        ?= thunder-device-plugin
+NAMESPACE      ?= thunder-system
 
 # Build.
 BIN_DIR := bin
@@ -162,6 +163,17 @@ helm-template: ## Render the main chart to stdout
 helm-package: ## Package the chart as a .tgz
 	$(HELM) package $(CHART)
 
+.PHONY: helm-push
+helm-push: helm-package ## Package and push the chart to $(CHART_REGISTRY)
+	@semver='$(patsubst v%,%,$(VERSION))'; \
+	if [[ "$$semver" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-+].*)?$$ ]]; then \
+		package="thunder-device-plugin-$$semver.tgz"; \
+	else \
+		package="$$(ls -t thunder-device-plugin-*.tgz | head -1)"; \
+	fi; \
+	echo "pushing $$package to $(CHART_REGISTRY)"; \
+	$(HELM) push "$$package" $(CHART_REGISTRY)
+
 .PHONY: helm-schema
 helm-schema: ## Check values.yaml validates against values.schema.json
 	@jq empty $(CHART)/values.schema.json && echo "values.schema.json is valid JSON"
@@ -177,6 +189,14 @@ verify: ## Offline checks: Go build/vet/test plus chart renders
 .PHONY: test-local
 test-local: ## Integration test on a throwaway local kind cluster
 	hack/test-local.sh
+
+.PHONY: release-version
+release-version: ## Print the version this commit would be released as
+	@hack/release-version.sh
+
+.PHONY: verify-promotion
+verify-promotion: ## Assert a release is its candidate re-tagged (CANDIDATE=0.2.0-rc.3 RELEASE_VERSION=0.2.0)
+	hack/verify-promotion.sh "$(CANDIDATE)" "$(RELEASE_VERSION)"
 
 .PHONY: preflight
 preflight: ## Diagnose whether an existing cluster can run the driver (read-only)
