@@ -32,9 +32,11 @@ operator:
   enabled: true
   image:
     # -- Repository for the operator image.
-    repository: thundercompute/thunder-dra-operator
-    # -- Tag for the operator image.
-    tag: latest
+    repository: ghcr.io/thunder-compute/thunder-dra-operator
+    # -- Tag for the operator image. Empty tracks the chart's appVersion, so the chart version alone pins what runs.
+    tag: ""
+    # -- Digest for the operator image, as `sha256:...`. Pins past the tag, and wins over `tag` when both are set.
+    digest: ""
     # -- Pull policy for the operator image. (Options: "Always", "IfNotPresent", "Never")
     pullPolicy: IfNotPresent
   # -- How often Thunder inventory is polled. New GPU models and capacity changes appear within this interval.
@@ -61,9 +63,11 @@ operator:
 daemon:
   image:
     # -- Repository for the node daemon image.
-    repository: thundercompute/thunder-device-plugin-daemon
-    # -- Tag for the node daemon image.
-    tag: latest
+    repository: ghcr.io/thunder-compute/thunder-device-plugin-daemon
+    # -- Tag for the node daemon image. Empty tracks the chart's appVersion, so the chart version alone pins what runs.
+    tag: ""
+    # -- Digest for the node daemon image, as `sha256:...`. Pins past the tag, and wins over `tag` when both are set.
+    digest: ""
     # -- Pull policy for the node daemon image. (Options: "Always", "IfNotPresent", "Never")
     pullPolicy: IfNotPresent
   # -- Annotations added to daemon pods.

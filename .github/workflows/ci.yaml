@@ -1,0 +1,55 @@
+# Every change is checked the same way, whether it is heading for a release
+# candidate or straight into the release line.
+name: ci
+
+on:
+  pull_request:
+    branches: [next, main]
+  push:
+    branches: [next, main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  HELM_VERSION: v4.0.1
+
+jobs:
+  check:
+    name: static checks and chart render
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: azure/setup-helm@v4
+        with:
+          version: ${{ env.HELM_VERSION }}
+      # Go build, vet and tests, then every chart rendered and asserted against
+      # the resource identity and packaging rules in hack/verify.sh.
+      - run: make check
+
+  cluster:
+    name: kind cluster test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: azure/setup-helm@v4
+        with:
+          version: ${{ env.HELM_VERSION }}
+      - uses: helm/kind-action@v1
+        with:
+          install_only: true
+      # Installs the chart on a throwaway cluster and drives a real
+      # ResourceClaim through scheduling against a stub Thunder API.
+      - run: make test-local

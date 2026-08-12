@@ -32,6 +32,7 @@ make test-local   # full test on a throwaway kind cluster, no GPU needed
 - [Configuration](#configuration)
 - [Development](#development)
 - [Troubleshooting](#troubleshooting)
+- [Releases](#releases)
 - [Repository layout](#repository-layout)
 
 ## How it works
@@ -89,11 +90,16 @@ kubectl create namespace thunder-system
 kubectl -n thunder-system create secret generic thunder-api \
   --from-literal=THUNDER_API_TOKEN='<token>'
 
-kubectl apply -f charts/thunder-device-plugin/crds/
-
-helm upgrade --install thunder-device-plugin charts/thunder-device-plugin \
-  --namespace thunder-system
+helm install thunder-device-plugin \
+  oci://ghcr.io/thunder-compute/charts/thunder-device-plugin \
+  --namespace thunder-system --version <version>
 ```
+
+Releases are listed under
+[Releases](https://github.com/Thunder-Compute/thunder-device-plugin/releases).
+To install from a clone instead, point Helm at
+`charts/thunder-device-plugin` and apply
+`charts/thunder-device-plugin/crds/` first.
 
 The chart never takes the API token as a value, so it never reaches the Helm
 release history. Create the Secret first; point at a different name with
@@ -115,7 +121,12 @@ thunder-gpu-h100    thundercompute.com/gpu-h100
 
 One class per GPU model — see [GPU types](#gpu-types).
 
-Helm never upgrades `crds/`, so re-apply it on every chart upgrade.
+Helm never upgrades `crds/`, so re-apply them on every chart upgrade:
+
+```bash
+helm show crds oci://ghcr.io/thunder-compute/charts/thunder-device-plugin \
+  --version <version> | kubectl apply -f -
+```
 
 ## Requesting GPUs
 
@@ -497,6 +508,21 @@ Details in [`hack/README.md`](hack/README.md).
 | Client resource stuck `Terminating` | Its `ResourceClaim` still exists; the finalizer holds it until the enrollment is revoked | `kubectl get clients.thundercompute.com -A -o wide` |
 | No slices at all | Operator cannot reach Thunder | `kubectl -n thunder-system logs -l app.kubernetes.io/component=operator` |
 
+## Releases
+
+Every release is a **promotion**, not a build. Changes land on `next`, which
+stages the next release and publishes a release candidate. Once that candidate
+is ready, `main` fast-forwards onto it and the release is tagged. The images you
+pull are the candidate's images re-tagged, byte for byte — never a rebuild of
+the same source, so a released version is one that has already run as-is.
+
+Images and charts are signed with cosign and carry SBOM and provenance
+attestations — see [SECURITY.md](SECURITY.md) to verify them.
+
+The chart leaves image tags empty so they follow `appVersion`, which means the
+chart version alone pins the whole install. Contributors: see
+[CONTRIBUTING.md](CONTRIBUTING.md) and [docs/RELEASING.md](docs/RELEASING.md).
+
 ## Repository layout
 
 | Path | Contents |
@@ -508,7 +534,7 @@ Details in [`hack/README.md`](hack/README.md).
 | [`charts/thunder-device-plugin`](charts/thunder-device-plugin) | Main chart |
 | [`charts/tests`](charts/tests) | Pod and VM test charts |
 | [`containers/`](containers) | Multi-stage Dockerfiles |
-| [`hack/`](hack) | Verification and test scripts |
+| [`hack/`](hack) | Verification, release and test scripts |
 | [`test/e2e`](test/e2e) | End-to-end tests against a live cluster |
 | [`Makefile`](Makefile) | Everything above |
 

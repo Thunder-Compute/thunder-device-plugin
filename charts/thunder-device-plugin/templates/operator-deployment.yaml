@@ -31,7 +31,7 @@ spec:
       serviceAccountName: {{ include "thunder-device-plugin.fullname" . | quote }}
       containers:
         - name: operator
-          image: "{{ .Values.operator.image.repository }}:{{ .Values.operator.image.tag }}"
+          image: {{ include "thunder-device-plugin.image" (dict "image" .Values.operator.image "root" .) | quote }}
           imagePullPolicy: {{ .Values.operator.image.pullPolicy }}
           env:
             - name: DRA_DRIVER_NAME

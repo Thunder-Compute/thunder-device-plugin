@@ -30,7 +30,7 @@ spec:
       hostPID: true
       containers:
         - name: daemon
-          image: "{{ .Values.daemon.image.repository }}:{{ .Values.daemon.image.tag }}"
+          image: {{ include "thunder-device-plugin.image" (dict "image" .Values.daemon.image "root" .) | quote }}
           imagePullPolicy: {{ .Values.daemon.image.pullPolicy }}
           securityContext:
             privileged: true
