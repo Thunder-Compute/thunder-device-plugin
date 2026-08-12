@@ -2,6 +2,7 @@ package operator
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"reflect"
@@ -84,14 +85,24 @@ func (o *Operator) Sync(ctx context.Context) error {
 		return err
 	}
 
+	// Per-pool failures are collected rather than returned immediately, so one
+	// bad pool cannot starve every alphabetically-later pool on the reconcile. (by claude)
+	var errs []error
+
 	for key, slices := range existing {
 		if _, ok := desired[key]; ok {
 			continue
 		}
+		deleted := true
 		for _, slice := range slices {
 			if err := o.deleteSlice(ctx, slice); err != nil {
-				return err
+				errs = append(errs, fmt.Errorf("delete stale pool %s/%s: %w", key.Zone, key.GPUType, err))
+				deleted = false
+				break
 			}
+		}
+		if !deleted {
+			continue
 		}
 		delete(o.cache, key)
 		o.logger.Info("deleted stale pool", "zone", key.Zone, "gpuType", key.GPUType, "slices", len(slices))
@@ -104,7 +115,8 @@ func (o *Operator) Sync(ctx context.Context) error {
 		wanted := buildResourceSlices(o.cfg, definition, generation)
 
 		if err := o.applyPool(ctx, key, current, wanted, definition, generation); err != nil {
-			return err
+			errs = append(errs, fmt.Errorf("apply pool %s/%s: %w", key.Zone, key.GPUType, err))
+			continue
 		}
 		o.cache[key] = publishedPool{Definition: definition, Generation: generation}
 	}
@@ -118,9 +130,12 @@ func (o *Operator) Sync(ctx context.Context) error {
 	// Device classes come last: a class is only useful once the devices it
 	// selects are published.
 	if err := o.syncDeviceClasses(ctx, desired); err != nil {
-		return err
+		errs = append(errs, err)
 	}
-	return o.reapOrphanedClients(ctx)
+	if err := o.reapOrphanedClients(ctx); err != nil {
+		errs = append(errs, err)
+	}
+	return errors.Join(errs...)
 }
 
 // applyPool reconciles every shard of one pool. A pool is published as several
