@@ -510,14 +510,10 @@ Details in [`hack/README.md`](hack/README.md).
 
 ## Releases
 
-Every release is a **promotion**, not a build. Changes land on `next`, which
-stages the next release and publishes a release candidate. Once that candidate
-is ready, `main` fast-forwards onto it and the release is tagged. The images you
-pull are the candidate's images re-tagged, byte for byte — never a rebuild of
-the same source, so a released version is one that has already run as-is.
-
-Images and charts are signed with cosign and carry SBOM and provenance
-attestations — see [SECURITY.md](SECURITY.md) to verify them.
+Component images are immutable UTC-tagged builds published independently of
+chart releases. Changes land on `next`, which stages the next chart release and
+publishes a source candidate. Once that composition is ready, `main`
+fast-forwards onto it and the chart release is tagged.
 
 The chart records its production image tags in `values.yaml`, so each chart
 version selects an explicit, tested component combination. Contributors: see

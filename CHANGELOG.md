@@ -13,8 +13,6 @@ release they were promoted to. See [docs/RELEASING.md](docs/RELEASING.md).
 
 - Images are published under `ghcr.io/thunder-compute/thunder-device-plugin`,
   and each chart release records its tested image tags in `values.yaml`.
-- Images and chart are signed with cosign and published with SBOM and
-  provenance attestations.
 
 ### Added
 

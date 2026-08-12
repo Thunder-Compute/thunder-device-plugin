@@ -14,13 +14,12 @@ Fixes go to the most recent release. There are no long-term support branches.
 
 ## Verifying what you install
 
-Images and charts are signed with [cosign](https://docs.sigstore.dev/) from
-GitHub Actions, keyless:
+Released charts pin immutable UTC-tagged component images in `values.yaml`.
+Resolve an image to its registry digest with:
 
 ```bash
-cosign verify ghcr.io/thunder-compute/thunder-device-plugin/operator:<tag> \
-  --certificate-identity-regexp '^https://github.com/Thunder-Compute/thunder-device-plugin/' \
-  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+docker buildx imagetools inspect \
+  ghcr.io/thunder-compute/thunder-device-plugin/operator:<tag>
 ```
 
 ## Notes on the components

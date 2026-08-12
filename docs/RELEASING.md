@@ -1,8 +1,9 @@
 # Releasing
 
-A release is a **promotion**, not a build. Work is staged on `next` until it is
-ready, and `main` moves onto it — the images published as a release are the
-staged images re-tagged, byte for byte, never a rebuild.
+A chart release is a **composition**, not an image build. Work is staged on
+`next` until it is ready, and `main` moves onto it. The daemon and operator are
+published independently with UTC timestamp tags; `values.yaml` records the
+exact builds composed by the chart.
 
 ```
 next  ──●──●──●──●─────────  candidates: 0.2.0-rc.1, -rc.2, -rc.3 …
@@ -40,14 +41,13 @@ release manifest for the exact component builds a chart installs.
 
 ## The loop
 
-1. **Merge to `next`.** CI runs `make check` and the kind cluster test. On
-   green, `release-candidate.yaml` builds and signs the images, publishes the
-   chart to `oci://ghcr.io/thunder-compute/charts`, and cuts a prerelease
-   `v0.2.0-rc.N`.
+1. **Publish component builds as needed.** Use one UTC timestamp for both
+   images when both components change. Test those exact images, then record
+   their tags in `values.yaml`. A chart-only change reuses the existing tags.
 
-2. **Run the candidate.** Install it wherever the release is validated. A
-   candidate is a real, immutable artifact, so whatever is tested is exactly
-   what a release would ship.
+2. **Merge to `next`.** CI checks the code and chart, verifies that the images
+   selected by `values.yaml` exist, and cuts source prerelease `v0.2.0-rc.N`.
+   Validate the chart from that exact commit with those exact images.
 
 3. **Fast-forward `main`** once the candidate is ready:
 
@@ -59,15 +59,15 @@ release manifest for the exact component builds a chart installs.
    wanted.
 
 4. **Release.** Run the `release` workflow from `main` with the candidate
-   version as input. It re-tags the candidate's image manifests — no rebuild —
-   publishes the chart at the release version, verifies the digests match, and
-   cuts `v0.2.0`.
+   version as input. It verifies the timestamped images still exist, publishes
+   the version from `Chart.yaml`, and cuts GitHub Release `v0.2.0`. It never
+   builds or re-tags a component image.
 
 5. **Bump `Chart.yaml`** on `next` to the next version.
 
-Anyone pinned to the candidate can move to the release and see nothing change
-but the image tag strings. Anything more means the release is not the artifact
-that was staged, and the promotion is wrong.
+The chart package, its source tag, and the two image tags in `values.yaml`
+together identify the release. Published timestamp image tags are immutable
+and must remain available while any chart release references them.
 
 ## Hotfixes
 
@@ -77,9 +77,8 @@ fix straight to `main` skips the only evidence that it works.
 ## Checking a release by hand
 
 ```bash
-make verify-promotion CANDIDATE=0.2.0-rc.3 RELEASE_VERSION=0.2.0
+make verify-chart-images
 
-cosign verify ghcr.io/thunder-compute/thunder-device-plugin/operator:<tag> \
-  --certificate-identity-regexp '^https://github.com/Thunder-Compute/thunder-device-plugin/' \
-  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+docker buildx imagetools inspect \
+  ghcr.io/thunder-compute/thunder-device-plugin/operator:<tag>
 ```
