@@ -34,9 +34,9 @@ CI never computes a version any other way.
 make release-version     # 0.2.0-rc.3
 ```
 
-The chart leaves `operator.image.tag` and `daemon.image.tag` empty, so images
-follow `appVersion`. Pinning a chart version therefore pins everything — there
-is no second knob to keep in sync.
+The chart records the production `operator.image.tag` and `daemon.image.tag`
+directly in `values.yaml`. Together with `Chart.yaml`, those values are the
+release manifest for the exact component builds a chart installs.
 
 ## The loop
 
@@ -79,7 +79,7 @@ fix straight to `main` skips the only evidence that it works.
 ```bash
 make verify-promotion CANDIDATE=0.2.0-rc.3 RELEASE_VERSION=0.2.0
 
-cosign verify ghcr.io/thunder-compute/thunder-dra-operator:0.2.0 \
+cosign verify ghcr.io/thunder-compute/thunder-device-plugin/operator:<tag> \
   --certificate-identity-regexp '^https://github.com/Thunder-Compute/thunder-device-plugin/' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```

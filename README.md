@@ -519,8 +519,8 @@ the same source, so a released version is one that has already run as-is.
 Images and charts are signed with cosign and carry SBOM and provenance
 attestations — see [SECURITY.md](SECURITY.md) to verify them.
 
-The chart leaves image tags empty so they follow `appVersion`, which means the
-chart version alone pins the whole install. Contributors: see
+The chart records its production image tags in `values.yaml`, so each chart
+version selects an explicit, tested component combination. Contributors: see
 [CONTRIBUTING.md](CONTRIBUTING.md) and [docs/RELEASING.md](docs/RELEASING.md).
 
 ## Repository layout

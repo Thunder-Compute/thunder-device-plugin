@@ -165,12 +165,8 @@ helm-package: ## Package the chart as a .tgz
 
 .PHONY: helm-push
 helm-push: helm-package ## Package and push the chart to $(CHART_REGISTRY)
-	@semver='$(patsubst v%,%,$(VERSION))'; \
-	if [[ "$$semver" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-+].*)?$$ ]]; then \
-		package="thunder-device-plugin-$$semver.tgz"; \
-	else \
-		package="$$(ls -t thunder-device-plugin-*.tgz | head -1)"; \
-	fi; \
+	@chart_version="$$(awk '/^version:/ {print $$2; exit}' $(CHART)/Chart.yaml)"; \
+	package="thunder-device-plugin-$${chart_version}.tgz"; \
 	echo "pushing $$package to $(CHART_REGISTRY)"; \
 	$(HELM) push "$$package" $(CHART_REGISTRY)
 

@@ -18,7 +18,7 @@ Images and charts are signed with [cosign](https://docs.sigstore.dev/) from
 GitHub Actions, keyless:
 
 ```bash
-cosign verify ghcr.io/thunder-compute/thunder-dra-operator:<version> \
+cosign verify ghcr.io/thunder-compute/thunder-device-plugin/operator:<tag> \
   --certificate-identity-regexp '^https://github.com/Thunder-Compute/thunder-device-plugin/' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```

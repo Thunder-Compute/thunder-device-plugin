@@ -19,7 +19,7 @@ permissions:
 
 env:
   HELM_VERSION: v4.0.1
-  REGISTRY: ghcr.io/thunder-compute
+  REGISTRY: ghcr.io/thunder-compute/thunder-device-plugin
   CHART_REGISTRY: oci://ghcr.io/thunder-compute/charts
 
 jobs:
@@ -57,7 +57,7 @@ jobs:
           build-args: |
             VERSION=${{ steps.version.outputs.version }}
             COMMIT=${{ github.sha }}
-          tags: ${{ env.REGISTRY }}/thunder-device-plugin-daemon:${{ steps.version.outputs.version }}
+          tags: ${{ env.REGISTRY }}/daemon:${{ steps.version.outputs.version }}
 
       - id: operator
         uses: docker/build-push-action@v6
@@ -71,25 +71,23 @@ jobs:
           build-args: |
             VERSION=${{ steps.version.outputs.version }}
             COMMIT=${{ github.sha }}
-          tags: ${{ env.REGISTRY }}/thunder-dra-operator:${{ steps.version.outputs.version }}
+          tags: ${{ env.REGISTRY }}/operator:${{ steps.version.outputs.version }}
 
       - uses: sigstore/cosign-installer@v3
       - name: Sign the images
         run: |
           cosign sign --yes \
-            "${REGISTRY}/thunder-device-plugin-daemon@${{ steps.daemon.outputs.digest }}"
+            "${REGISTRY}/daemon@${{ steps.daemon.outputs.digest }}"
           cosign sign --yes \
-            "${REGISTRY}/thunder-dra-operator@${{ steps.operator.outputs.digest }}"
+            "${REGISTRY}/operator@${{ steps.operator.outputs.digest }}"
 
       - uses: azure/setup-helm@v4
         with:
           version: ${{ env.HELM_VERSION }}
 
-      # The chart's appVersion is the candidate version, and the chart leaves
-      # image tags empty, so the chart version alone decides what runs.
+      # Chart.yaml and values.yaml are the release manifest: they select the
+      # chart version and the exact component image tags being published.
       - name: Publish the chart
-        env:
-          VERSION: ${{ steps.version.outputs.version }}
         run: |
           helm registry login ghcr.io \
             --username "${{ github.actor }}" --password "${{ secrets.GITHUB_TOKEN }}"
