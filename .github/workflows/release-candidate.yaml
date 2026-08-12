@@ -1,6 +1,6 @@
-# Every commit on `next` becomes a release candidate: images, chart and a
-# prerelease tag. A candidate is a real, immutable artifact that a release
-# re-tags rather than rebuilds, never a preview build.
+# Every commit on `next` becomes a source release candidate. Component
+# images are built independently; values.yaml selects the timestamped images
+# this candidate composes and validates.
 name: release-candidate
 
 on:
@@ -14,13 +14,7 @@ concurrency:
 
 permissions:
   contents: write
-  packages: write
-  id-token: write
-
-env:
-  HELM_VERSION: v4.0.1
-  REGISTRY: ghcr.io/thunder-compute
-  CHART_REGISTRY: oci://ghcr.io/thunder-compute/charts
+  packages: read
 
 jobs:
   publish:
@@ -45,55 +39,8 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - id: daemon
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: containers/daemon/Dockerfile
-          push: true
-          platforms: linux/amd64
-          provenance: true
-          sbom: true
-          build-args: |
-            VERSION=${{ steps.version.outputs.version }}
-            COMMIT=${{ github.sha }}
-          tags: ${{ env.REGISTRY }}/thunder-device-plugin-daemon:${{ steps.version.outputs.version }}
-
-      - id: operator
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: containers/operator/Dockerfile
-          push: true
-          platforms: linux/amd64
-          provenance: true
-          sbom: true
-          build-args: |
-            VERSION=${{ steps.version.outputs.version }}
-            COMMIT=${{ github.sha }}
-          tags: ${{ env.REGISTRY }}/thunder-dra-operator:${{ steps.version.outputs.version }}
-
-      - uses: sigstore/cosign-installer@v3
-      - name: Sign the images
-        run: |
-          cosign sign --yes \
-            "${REGISTRY}/thunder-device-plugin-daemon@${{ steps.daemon.outputs.digest }}"
-          cosign sign --yes \
-            "${REGISTRY}/thunder-dra-operator@${{ steps.operator.outputs.digest }}"
-
-      - uses: azure/setup-helm@v4
-        with:
-          version: ${{ env.HELM_VERSION }}
-
-      # The chart's appVersion is the candidate version, and the chart leaves
-      # image tags empty, so the chart version alone decides what runs.
-      - name: Publish the chart
-        env:
-          VERSION: ${{ steps.version.outputs.version }}
-        run: |
-          helm registry login ghcr.io \
-            --username "${{ github.actor }}" --password "${{ secrets.GITHUB_TOKEN }}"
-          make helm-push
+      - name: Verify the selected component images
+        run: make verify-chart-images
 
       - name: Tag the candidate
         env:
@@ -104,8 +51,8 @@ jobs:
           {
             echo "Release candidate staged on \`next\`."
             echo
-            echo "A release re-tags these images rather than rebuilding them, so whatever"
-            echo "this candidate does is what the release will do."
+            echo "The component image tags are the immutable UTC builds recorded in"
+            echo '`charts/thunder-device-plugin/values.yaml`.'
           } > notes.md
           gh release create "v${VERSION}" \
             --prerelease \

@@ -165,12 +165,8 @@ helm-package: ## Package the chart as a .tgz
 
 .PHONY: helm-push
 helm-push: helm-package ## Package and push the chart to $(CHART_REGISTRY)
-	@semver='$(patsubst v%,%,$(VERSION))'; \
-	if [[ "$$semver" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-+].*)?$$ ]]; then \
-		package="thunder-device-plugin-$$semver.tgz"; \
-	else \
-		package="$$(ls -t thunder-device-plugin-*.tgz | head -1)"; \
-	fi; \
+	@chart_version="$$(awk '/^version:/ {print $$2; exit}' $(CHART)/Chart.yaml)"; \
+	package="thunder-device-plugin-$${chart_version}.tgz"; \
 	echo "pushing $$package to $(CHART_REGISTRY)"; \
 	$(HELM) push "$$package" $(CHART_REGISTRY)
 
@@ -194,9 +190,9 @@ test-local: ## Integration test on a throwaway local kind cluster
 release-version: ## Print the version this commit would be released as
 	@hack/release-version.sh
 
-.PHONY: verify-promotion
-verify-promotion: ## Assert a release is its candidate re-tagged (CANDIDATE=0.2.0-rc.3 RELEASE_VERSION=0.2.0)
-	hack/verify-promotion.sh "$(CANDIDATE)" "$(RELEASE_VERSION)"
+.PHONY: verify-chart-images
+verify-chart-images: ## Verify the timestamped images selected by values.yaml exist
+	hack/verify-chart-images.sh
 
 .PHONY: preflight
 preflight: ## Diagnose whether an existing cluster can run the driver (read-only)

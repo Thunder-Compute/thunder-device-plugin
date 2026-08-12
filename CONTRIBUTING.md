@@ -22,8 +22,8 @@ CI runs both on every pull request.
   The schema rejects unknown keys, so a value that is not in it cannot be set.
 - Never make the chart create the Thunder API token Secret. It takes the name
   of an existing one, so a token cannot end up in a release history.
-- Image tags stay empty in `values.yaml`. They follow `appVersion`, which is
-  what makes a chart version pin the whole install.
+- Released image tags live in `values.yaml`. Change them only when promoting
+  component builds that have been tested with that chart.
 - Do not add anything that only makes sense in one particular cluster. Every
   deployment should be a plain values overlay on top of this chart, ours
   included. If a cluster needs something the chart cannot express, that is a

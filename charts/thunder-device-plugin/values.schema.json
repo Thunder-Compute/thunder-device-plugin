@@ -33,6 +33,7 @@
       "additionalProperties": false,
       "required": [
         "repository",
+        "tag",
         "pullPolicy"
       ],
       "properties": {
@@ -42,7 +43,8 @@
         },
         "tag": {
           "type": "string",
-          "description": "Image tag. Empty falls back to the chart appVersion."
+          "minLength": 1,
+          "description": "Image tag selected by this chart release."
         },
         "pullPolicy": {
           "enum": [

@@ -1,6 +1,6 @@
-# Promotion, not a build. A release re-tags the images of a candidate that was
-# already staged on `next`, so what is installed is that exact artifact rather
-# than a fresh build of the same source.
+# Publish the chart composition already staged as a candidate. Images are
+# independent timestamped artifacts selected by values.yaml; this workflow
+# verifies them but never builds or re-tags them.
 #
 # Run this from `main`, after fast-forwarding main onto the candidate's commit.
 name: release
@@ -20,11 +20,9 @@ concurrency:
 permissions:
   contents: write
   packages: write
-  id-token: write
 
 env:
   HELM_VERSION: v4.0.1
-  REGISTRY: ghcr.io/thunder-compute
   CHART_REGISTRY: oci://ghcr.io/thunder-compute/charts
 
 jobs:
@@ -70,34 +68,14 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # imagetools create copies the manifest, so the release tag and the
-      # candidate tag resolve to one identical digest. The images are never
-      # rebuilt, and the existing cosign signature covers them both.
-      - name: Re-tag the candidate images
-        env:
-          CANDIDATE: ${{ inputs.candidate }}
-          VERSION: ${{ steps.version.outputs.version }}
-        run: |
-          set -euo pipefail
-          for image in thunder-device-plugin-daemon thunder-dra-operator; do
-            docker buildx imagetools create \
-              --tag "${REGISTRY}/${image}:${VERSION}" \
-              "${REGISTRY}/${image}:${CANDIDATE}"
-          done
-
-      - name: Verify the release is the candidate
-        env:
-          CANDIDATE: ${{ inputs.candidate }}
-          VERSION: ${{ steps.version.outputs.version }}
-        run: make verify-promotion CANDIDATE="${CANDIDATE}" RELEASE_VERSION="${VERSION}"
+      - name: Verify the selected component images
+        run: make verify-chart-images
 
       - uses: azure/setup-helm@v4
         with:
           version: ${{ env.HELM_VERSION }}
 
       - name: Publish the chart
-        env:
-          VERSION: ${{ steps.version.outputs.version }}
         run: |
           helm registry login ghcr.io \
             --username "${{ github.actor }}" --password "${{ secrets.GITHUB_TOKEN }}"
@@ -112,7 +90,7 @@ jobs:
           set -euo pipefail
           {
             echo "Promoted from \`v${CANDIDATE}\`."
-            echo "Identical image digests: the release is that candidate re-tagged, not a rebuild."
+            echo "Component images are the immutable UTC-tagged builds recorded in values.yaml."
             echo
             echo '```bash'
             echo "helm install thunder-device-plugin \\"
