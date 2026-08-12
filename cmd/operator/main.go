@@ -28,7 +28,7 @@ func main() {
 	flag.Parse()
 
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{}))
-	logger.Info("starting thunder-dra-operator", "version", version.Get(), "revision", version.Revision())
+	logger.Info("starting thunder-device-plugin-operator", "version", version.Get(), "revision", version.Revision())
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 

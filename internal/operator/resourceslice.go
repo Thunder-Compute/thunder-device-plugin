@@ -89,7 +89,7 @@ func buildSlice(cfg Config, definition poolDefinition, generation int64, shard, 
 			Labels: map[string]string{
 				"app.kubernetes.io/name":       driverAppName,
 				"app.kubernetes.io/component":  resourceInventoryComponent,
-				"app.kubernetes.io/managed-by": "thunder-dra-operator",
+				"app.kubernetes.io/managed-by": "thunder-device-plugin-operator",
 				zoneLabelName:                  dnsLabel(definition.Zone),
 				gpuTypeLabelName:               dnsLabel(definition.GPUType),
 				hostCapacityLabelName:          fmt.Sprint(definition.HostCapacity),

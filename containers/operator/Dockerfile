@@ -22,14 +22,14 @@ RUN --mount=type=cache,target=/go/pkg/mod \
       -ldflags "-s -w \
         -X github.com/Thunder-Compute/thunder-device-plugin/internal/version.Version=${VERSION} \
         -X github.com/Thunder-Compute/thunder-device-plugin/internal/version.Commit=${COMMIT}" \
-      -o /out/thunder-dra-operator ./cmd/thunder-dra-operator
+      -o /out/thunder-device-plugin-operator ./cmd/operator
 
 FROM debian:bookworm-slim
 
 ARG VERSION=dev
 ARG COMMIT=unknown
 
-LABEL org.opencontainers.image.title="thunder-dra-operator" \
+LABEL org.opencontainers.image.title="thunder-device-plugin-operator" \
       org.opencontainers.image.description="Thunder Compute DRA ResourceSlice inventory operator" \
       org.opencontainers.image.source="https://github.com/Thunder-Compute/thunder-device-plugin" \
       org.opencontainers.image.vendor="Thunder Compute" \
@@ -40,8 +40,8 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=build /out/thunder-dra-operator /usr/local/bin/thunder-dra-operator
+COPY --from=build /out/thunder-device-plugin-operator /usr/local/bin/thunder-device-plugin-operator
 
 # The operator only talks to the Kubernetes and Thunder APIs.
 USER 65532:65532
-ENTRYPOINT ["/usr/local/bin/thunder-dra-operator"]
+ENTRYPOINT ["/usr/local/bin/thunder-device-plugin-operator"]

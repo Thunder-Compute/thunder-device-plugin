@@ -1,7 +1,8 @@
 # Thunder Device Plugin
 #
 # Run `make help` for the full target list. Every variable below can be
-# overridden on the command line, e.g. `make image IMAGE_TAG=v1.2.3`.
+# overridden on the command line, e.g.
+# `make image IMAGE_TAG=20260812T162530Z`.
 
 SHELL := /usr/bin/env bash
 .SHELLFLAGS := -eu -o pipefail -c
@@ -14,10 +15,12 @@ VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
 
 # Container images.
-REGISTRY       ?= us-docker.pkg.dev/thunder-426102/library
-DAEMON_IMAGE   ?= $(REGISTRY)/thunder-device-plugin-daemon
-OPERATOR_IMAGE ?= $(REGISTRY)/thunder-dra-operator
-IMAGE_TAG      ?= $(VERSION)
+REGISTRY       ?= ghcr.io/thunder-compute/thunder-device-plugin
+DAEMON_IMAGE   ?= $(REGISTRY)/daemon
+OPERATOR_IMAGE ?= $(REGISTRY)/operator
+# Capture this once so aggregate targets give both images the same UTC tag.
+IMAGE_TIMESTAMP := $(shell date -u +%Y%m%dT%H%M%SZ)
+IMAGE_TAG        ?= $(IMAGE_TIMESTAMP)
 PLATFORMS      ?= linux/amd64
 
 # Helm.
@@ -104,7 +107,7 @@ build-daemon: ## Build the node daemon
 .PHONY: build-operator
 build-operator: ## Build the DRA operator
 	CGO_ENABLED=0 GOOS=$(GOOS) GOARCH=$(GOARCH) $(GO) build -trimpath -ldflags '$(LDFLAGS)' \
-		-o $(BIN_DIR)/thunder-dra-operator ./cmd/thunder-dra-operator
+		-o $(BIN_DIR)/thunder-device-plugin-operator ./cmd/operator
 
 .PHONY: clean
 clean: ## Remove build output
@@ -157,16 +160,7 @@ helm-template: ## Render the main chart to stdout
 
 .PHONY: helm-package
 helm-package: ## Package the chart as a .tgz
-	@# Chart versions must be semver. Stamp the release version only when
-	@# VERSION is a tag; otherwise keep whatever Chart.yaml declares.
-	@semver='$(patsubst v%,%,$(VERSION))'; \
-	if [[ "$$semver" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-+].*)?$$ ]]; then \
-		echo "packaging $(CHART) as $$semver"; \
-		$(HELM) package $(CHART) --version "$$semver" --app-version "$(VERSION)"; \
-	else \
-		echo "$(VERSION) is not semver; packaging with the Chart.yaml version"; \
-		$(HELM) package $(CHART); \
-	fi
+	$(HELM) package $(CHART)
 
 .PHONY: helm-schema
 helm-schema: ## Check values.yaml validates against values.schema.json
