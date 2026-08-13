@@ -24,6 +24,8 @@ thunder:
   artifactBaseURL: "https://get.thundercompute.com"
   # -- Installer the daemon reads the pinned libthunder.so digest out of. It is read, never executed. Empty derives it as `<artifactBaseURL>/install.sh`, which is almost always what you want.
   installURL: ""
+  # -- Host data ports thunderd binds on every enrolled node, as `start-end`. Each attached GPU session takes a data and a control port out of this range, so it bounds how many sessions a node can serve. It MUST NOT overlap the cluster's NodePort range (`--service-node-port-range`, default 30000-32767): the collision is silent, because with Cilium's eBPF NodePort handling nothing holds a listening socket for `bind()` to conflict with. Empty leaves the range to the installer's own default (32000-32199), which is what every node ran before this value existed. (Example: "40000-40199")
+  portRange: ""
 
 ## operator
 

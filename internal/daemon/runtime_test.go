@@ -67,6 +67,53 @@ func TestConfigFromLookupAllowsNodeLabelFallbacks(t *testing.T) {
 	}
 }
 
+// A malformed host data-port range has to fail at startup: the daemon would
+// otherwise enroll the node with ports nobody chose. (by claude)
+func TestConfigFromLookupPortRange(t *testing.T) {
+	tests := []struct {
+		name    string
+		value   string
+		want    string
+		wantErr bool
+	}{
+		{name: "unset", value: "", want: ""},
+		{name: "installer default", value: "32000-32199", want: "32000-32199"},
+		{name: "clear of the nodeport range", value: "40000-40199", want: "40000-40199"},
+		{name: "not a range", value: "nonsense", wantErr: true},
+		{name: "single port", value: "32000", wantErr: true},
+		{name: "reversed", value: "32199-32000", wantErr: true},
+		{name: "port zero", value: "0-100", wantErr: true},
+		{name: "above the port space", value: "1-70000", wantErr: true},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			env := map[string]string{
+				EnvNode:               "node-a",
+				EnvMinNVDriverVersion: "535.104.05",
+				EnvThunderAPIToken:    "token",
+			}
+			if test.value != "" {
+				env[EnvThunderPortRange] = test.value
+			}
+
+			cfg, err := configFromLookup(mapLookup(env))
+			if test.wantErr {
+				if err == nil {
+					t.Fatalf("configFromLookup accepted %q", test.value)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("configFromLookup: %v", err)
+			}
+			if cfg.PortRange != test.want {
+				t.Fatalf("PortRange = %q, want %q", cfg.PortRange, test.want)
+			}
+		})
+	}
+}
+
 func TestResolveNodeAttributesFromLabels(t *testing.T) {
 	cfg := Config{
 		Node:              "node-a",
