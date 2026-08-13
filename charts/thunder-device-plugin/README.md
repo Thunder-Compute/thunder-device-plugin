@@ -109,36 +109,61 @@ typos and wrong types fail at install time rather than silently doing nothing.
 | `thunder.artifactBaseURL` | string | `https://get.thundercompute.com` | Host the Thunder client artifacts are downloaded from. The daemon fetches `libthunder.so` from here and stages it into every container that claims a GPU. Point at a staging artifact host to run unreleased client builds. |
 | `thunder.installURL` | string | `""` | Installer the daemon reads the pinned libthunder.so digest out of. It is read, never executed. Empty derives it as `<artifactBaseURL>/install.sh`. |
 | `thunder.telemetryURL` | string | `https://telemetry.thundercompute.com:2096` | Telemetry collector written into each container's Thunder client config. |
-| `thunder.portRange` | string | `""` | Host data ports thunderd binds on every enrolled node, as `start-end`. `""` leaves the installer's default of `32000-32199`. See [Host data ports](#host-data-ports) |
+| `thunder.portRange` | string | `61000-61199` | Host data ports thunderd binds on every enrolled node, as `start-end`. The default is clear of both the NodePort range (`30000-32767`) and the ephemeral range (`32768-60999`). See [Host data ports](#host-data-ports) |
 
 #### Host data ports
 
 Every enrolled node runs thunderd, which binds a range of host ports for the
 CUDA traffic of attached GPUs: each session takes a data and a control port out
 of the range, so the range bounds how many sessions the node can serve.
+`thunder.portRange` declares that range, and the chart defaults it to
+`61000-61199`.
 
-`thunder.portRange` declares that range. Left empty the chart passes nothing and
-the Thunder installer picks its own default, `32000-32199` — which is what every
-node enrolled by this chart has always run. Setting it makes the range explicit,
-and lets you move it.
+That default is the only 200-port window on a stock Linux node that nothing else
+already claims. A node's port map has two regions the data ports must stay out
+of:
 
-**The range must not overlap the cluster's NodePort range.** That is
-`--service-node-port-range` on the API server, `30000-32767` by default, so the
-installer's default sits inside it. The overlap is silent in both directions:
-with Cilium's eBPF NodePort implementation there is no listening socket on the
-node for `bind()` to conflict with, so neither thunderd nor the NodePort
-Service reports anything — traffic just goes to the wrong place. Either move the
-data ports clear of the NodePort range:
+- **`30000-32767`, the NodePort range.** This is `--service-node-port-range` on
+  the API server, and it is where Kubernetes hands out `NodePort` Services. An
+  overlap here is silent: with Cilium's eBPF kube-proxy replacement a NodePort
+  has no listening socket, so thunderd's `bind()` succeeds and reports nothing,
+  and Cilium then DNATs that port's traffic away before it is delivered to
+  thunderd's socket. Neither side logs a conflict; the traffic simply goes to
+  the wrong place.
+- **`32768-60999`, the ephemeral range.** This is `net.ipv4.ip_local_port_range`,
+  the ports the kernel assigns as source ports for outbound connections. Binding
+  data ports in here does not misroute anything, but it races the kernel: a port
+  the kernel has already handed to an outbound connection is not available to
+  thunderd when it goes to bind it.
+
+`61000-61199` sits above both, so the chart installs safely on an unmodified
+cluster — including managed EKS, GKE and AKS, where `--service-node-port-range`
+is not a flag the customer can change at all.
+
+Set the value when your cluster has moved either range, or to opt back into the
+Thunder installer's historical default:
 
 ```bash
 helm upgrade --install thunder-device-plugin charts/thunder-device-plugin \
-  --namespace thunder-system --set thunder.portRange=40000-40199
+  --namespace thunder-system --set thunder.portRange=32000-32199
 ```
 
-or narrow the NodePort range on the API server so the two do not meet. Changing
-the value re-enrolls nodes only as they are re-enrolled for other reasons; the
-range is applied at enrollment, so an already-enrolled node keeps the range it
-was installed with.
+Setting it to `""` passes nothing and leaves the range to the installer, which
+also picks `32000-32199`.
+
+##### Upgrading an existing fleet
+
+The range is applied at enrollment, so **an already-enrolled node keeps the range
+it was installed with**. Upgrading the chart does not move a running node's data
+ports; a node picks up the new default only when it re-enrolls. Before that
+happens:
+
+- **Open `61000-61199` in the firewalls and security groups in front of your
+  nodes.** A node that re-enrolls onto the new range with the ports still closed
+  is unreachable for CUDA traffic.
+- To keep the old behaviour instead, pin it explicitly with
+  `thunder.portRange: "32000-32199"` — and note that leaves the NodePort
+  collision described above in place.
 
 ### Operator
 

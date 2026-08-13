@@ -70,7 +70,8 @@ type Config struct {
 	// PortRange is the host data-port range, "start-end", that thunderd binds
 	// for CUDA traffic: a data and a control port per attached session. It is
 	// passed to the installer at enrollment. Empty leaves the installer's own
-	// default in place. It must not overlap the cluster's NodePort range. (by claude)
+	// default in place. It must clear both the cluster's NodePort range and the
+	// kernel's ephemeral range; the chart's default, 61000-61199, does. (by claude)
 	PortRange           string
 	ThunderAPIURL       string
 	ThunderAPIToken     string
@@ -194,7 +195,7 @@ func optionalPortRangeEnv(lookup func(string) (string, bool), key string) (strin
 	if value == "" {
 		return "", nil
 	}
-	malformed := fmt.Errorf("%s must be a port range like 32000-32199, got %q", key, value)
+	malformed := fmt.Errorf("%s must be a port range like 61000-61199, got %q", key, value)
 	rawStart, rawEnd, found := strings.Cut(value, "-")
 	if !found {
 		return "", malformed

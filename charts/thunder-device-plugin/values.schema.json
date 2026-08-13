@@ -159,7 +159,7 @@
         "portRange": {
           "type": "string",
           "pattern": "^$|^[0-9]{1,5}-[0-9]{1,5}$",
-          "description": "Host data ports thunderd binds, as start-end. Must not overlap the cluster's NodePort range. Empty leaves the installer's default (32000-32199)."
+          "description": "Host data ports thunderd binds, as start-end. Defaults to 61000-61199, clear of the NodePort range (30000-32767) and the kernel's ephemeral range (32768-60999). Empty leaves the Thunder installer's default (32000-32199)."
         }
       }
     },
