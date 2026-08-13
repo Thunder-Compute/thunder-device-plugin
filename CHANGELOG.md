@@ -17,3 +17,7 @@ release they were promoted to. See [docs/RELEASING.md](docs/RELEASING.md).
 ### Added
 
 - `image.digest` for both components, pinning past the tag when set.
+- `thunder.portRange`, declaring the host data ports thunderd binds on each
+  enrolled node. It must not overlap the cluster's NodePort range. Empty, the
+  default, leaves the installer's own default (`32000-32199`) in place, so
+  existing installs are unchanged.

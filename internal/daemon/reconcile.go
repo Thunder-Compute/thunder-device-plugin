@@ -227,6 +227,7 @@ func (r *reconciler) enroll(ctx context.Context, cfg Config) error {
 		EnrollmentToken: token.EnrollmentToken,
 		IP:              cfg.AdvertisedIP,
 		Zone:            cfg.Zone,
+		PortRange:       cfg.PortRange,
 		ServerName:      cfg.Node,
 	}))
 	if err != nil {

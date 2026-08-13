@@ -155,6 +155,11 @@
           "type": "string",
           "pattern": "^https?://",
           "description": "Host the Thunder client artifacts (libthunder.so, install.sh) are downloaded from."
+        },
+        "portRange": {
+          "type": "string",
+          "pattern": "^$|^[0-9]{1,5}-[0-9]{1,5}$",
+          "description": "Host data ports thunderd binds, as start-end. Must not overlap the cluster's NodePort range. Empty leaves the installer's default (32000-32199)."
         }
       }
     },
