@@ -77,8 +77,8 @@ func TestConfigFromLookupPortRange(t *testing.T) {
 		wantErr bool
 	}{
 		{name: "unset", value: "", want: ""},
-		{name: "installer default", value: "32000-32199", want: "32000-32199"},
-		{name: "clear of the nodeport range", value: "40000-40199", want: "40000-40199"},
+		{name: "chart default", value: "61000-61199", want: "61000-61199"},
+		{name: "installer default, pinned explicitly", value: "32000-32199", want: "32000-32199"},
 		{name: "not a range", value: "nonsense", wantErr: true},
 		{name: "single port", value: "32000", wantErr: true},
 		{name: "reversed", value: "32199-32000", wantErr: true},

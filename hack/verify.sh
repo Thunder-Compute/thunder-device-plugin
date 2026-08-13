@@ -119,6 +119,8 @@ verify_charts() {
     "${ADVERTISED_IP_LABEL}" "${affinity}"
   check_contains "node affinity still requires a zone label" "${ZONE_LABEL}" "${affinity}"
 
+  verify_port_range "${main_manifest}"
+
   verify_chart_quality "${main_manifest}"
 
   if command -v kubectl >/dev/null 2>&1; then
@@ -137,6 +139,36 @@ verify_charts() {
     fi
   else
     warn "skipping schema check: kubectl not found"
+  fi
+}
+
+# verify_port_range asserts the host data ports thunderd binds land where a
+# stock node has nothing else: above the NodePort range (30000-32767) and above
+# the kernel's ephemeral range (32768-60999). Both overlaps fail silently on the
+# node, so only the rendered manifest can catch a regression here. (by claude)
+verify_port_range() {
+  local main_manifest="$1"
+
+  step "Host data ports"
+
+  check_contains "daemon is given the default host data-port range" \
+    $'- name: THUNDER_PORT_RANGE\n              value: "61000-61199"' "${main_manifest}"
+
+  local overridden
+  if overridden="$("${HELM}" template verify "${CHART_MAIN}" \
+    --set thunder.portRange=32000-32199 2>&1)"; then
+    check_contains "thunder.portRange overrides the default" \
+      $'- name: THUNDER_PORT_RANGE\n              value: "32000-32199"' "${overridden}"
+  else
+    check_fail "thunder.portRange overrides the default" "${overridden}"
+  fi
+
+  if "${HELM}" template verify "${CHART_MAIN}" \
+    --set thunder.portRange=nonsense >/dev/null 2>&1; then
+    check_fail "values.schema.json rejects a malformed port range" \
+      "helm accepted thunder.portRange=nonsense"
+  else
+    check_pass "values.schema.json rejects a malformed port range"
   fi
 }
 
