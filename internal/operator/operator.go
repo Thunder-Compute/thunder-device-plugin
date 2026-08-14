@@ -86,7 +86,7 @@ func (o *Operator) Sync(ctx context.Context) error {
 	}
 
 	// Per-pool failures are collected rather than returned immediately, so one
-	// bad pool cannot starve every alphabetically-later pool on the reconcile. (by claude)
+	// bad pool cannot starve every alphabetically-later pool on the reconcile.
 	var errs []error
 
 	for key, slices := range existing {
