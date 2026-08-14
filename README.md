@@ -477,6 +477,7 @@ make image         # multi-stage builds from source
 | `make lint` / `test` / `cover` | `gofmt` + `go vet`, unit tests, coverage |
 | `make build` | Both binaries into `bin/`, version linked in |
 | `make image` / `push` / `image-buildx` | Container images |
+| `make publish-images` | Build/push both images and update chart image tags |
 | `make helm-lint` / `helm-schema` / `helm-package` | Chart checks and packaging |
 | `make verify` / `test-local` / `preflight` | See [`hack/`](hack/) |
 | `make install` / `uninstall` / `status` / `logs` | Operate a deployment |
@@ -510,16 +511,13 @@ Details in [`hack/README.md`](hack/README.md).
 
 ## Releases
 
-Every commit merged into `main` builds and publishes the daemon and operator
-images under its full Git commit SHA. A release is a **promotion**, not a
-rebuild: the release workflow retags the selected `main` commit's image
-manifests and packages the chart with the release version.
+Images are published with an immutable generated tag before the chart change is
+committed. `make publish-images` updates both image tags in `values.yaml`, so a
+chart commit identifies the exact component artifacts it uses. The candidate
+workflow verifies those images; the release workflow packages the tested chart
+composition without rebuilding or retagging images.
 
-Images and charts are signed with cosign and carry SBOM and provenance
-attestations — see [SECURITY.md](SECURITY.md) to verify them.
-
-The chart leaves image tags empty so packaged `appVersion` selects the matching
-release images. Contributors: see
+Contributors: see
 [CONTRIBUTING.md](CONTRIBUTING.md) and [docs/RELEASING.md](docs/RELEASING.md).
 
 ## Repository layout

@@ -2,7 +2,7 @@
 #
 # Run `make help` for the full target list. Every variable below can be
 # overridden on the command line, e.g.
-# `make image IMAGE_TAG=20260812T162530Z`.
+# `make publish-images IMAGE_TAG=20260812T162530Z`.
 
 SHELL := /usr/bin/env bash
 .SHELLFLAGS := -eu -o pipefail -c
@@ -147,6 +147,10 @@ image-buildx: ## Build and push multi-platform images (see PLATFORMS)
 		--build-arg VERSION=$(VERSION) --build-arg COMMIT=$(COMMIT) \
 		-f containers/operator/Dockerfile -t $(OPERATOR_IMAGE):$(IMAGE_TAG) .
 
+.PHONY: publish-images
+publish-images: ## Build/push both images and record their tag in chart values
+	@hack/publish-images.sh "$(IMAGE_TAG)"
+
 ##@ Helm
 
 .PHONY: helm-lint
@@ -163,7 +167,7 @@ helm-template: ## Render the main chart to stdout
 helm-package: ## Package the chart as a .tgz
 	@semver='$(patsubst v%,%,$(VERSION))'; \
 	if [[ "$$semver" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-+].*)?$$ ]]; then \
-		$(HELM) package $(CHART) --version "$$semver" --app-version "$$semver"; \
+		$(HELM) package $(CHART) --version "$$semver"; \
 	else \
 		$(HELM) package $(CHART); \
 	fi
@@ -196,9 +200,9 @@ verify: ## Offline checks: Go build/vet/test plus chart renders
 test-local: ## Integration test on a throwaway local kind cluster
 	hack/test-local.sh
 
-.PHONY: verify-promotion
-verify-promotion: ## Assert a release is the source image re-tagged (SOURCE_TAG=git-sha RELEASE_VERSION=0.2.0)
-	hack/verify-promotion.sh "$(SOURCE_TAG)" "$(RELEASE_VERSION)"
+.PHONY: verify-chart-images
+verify-chart-images: ## Verify the timestamped images selected by values.yaml exist
+	hack/verify-chart-images.sh
 
 .PHONY: preflight
 preflight: ## Diagnose whether an existing cluster can run the driver (read-only)

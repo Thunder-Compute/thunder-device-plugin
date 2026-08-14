@@ -1,15 +1,13 @@
-# Promotion, not a build. Every commit on `main` has images tagged by its full
-# Git SHA. A release promotes the selected `main` commit's image manifests to
-# the release version, so what is installed is that exact artifact.
-#
-# Run this from `main`, after its image publishing workflow has completed.
+# A release packages the chart composition already staged on `next`. Images
+# are not rebuilt or retagged here: values.yaml already selects the exact
+# immutable image artifacts that were tested by the release candidate.
 name: release
 
 on:
   workflow_dispatch:
     inputs:
-      version:
-        description: "Release version, e.g. 0.2.0"
+      candidate:
+        description: "Candidate to promote, e.g. 0.2.0-rc.3"
         required: true
         type: string
 
@@ -20,16 +18,14 @@ concurrency:
 permissions:
   contents: write
   packages: write
-  id-token: write
 
 env:
   HELM_VERSION: v4.0.1
-  REGISTRY: ghcr.io/thunder-compute/thunder-device-plugin
   CHART_REGISTRY: oci://ghcr.io/thunder-compute/charts
 
 jobs:
   promote:
-    name: promote main
+    name: promote candidate
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -37,19 +33,30 @@ jobs:
           ref: main
           fetch-depth: 0
 
-      # Releases must be run from main. The checked-out commit already has
-      # images published by publish-images.yaml under its full Git SHA.
       - id: version
         env:
-          VERSION: ${{ inputs.version }}
+          CANDIDATE: ${{ inputs.candidate }}
         run: |
           set -euo pipefail
           [[ "${GITHUB_REF}" == "refs/heads/main" ]] ||
             { echo "releases must run from main, got ${GITHUB_REF}"; exit 1; }
-          [[ "${VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-+].*)?$ ]] ||
-            { echo "version must look like 0.2.0, got ${VERSION}"; exit 1; }
-          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
-          echo "source_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          [[ "${CANDIDATE}" =~ ^[0-9]+\.[0-9]+\.[0-9]+-rc\.[0-9]+$ ]] ||
+            { echo "candidate must look like 0.2.0-rc.3, got ${CANDIDATE}"; exit 1; }
+
+          candidate_sha="$(git rev-list -n1 "v${CANDIDATE}")"
+          main_sha="$(git rev-parse HEAD)"
+          [[ "${candidate_sha}" == "${main_sha}" ]] || {
+            echo "v${CANDIDATE} is ${candidate_sha} but main is ${main_sha}."
+            echo "Fast-forward main onto the candidate before releasing."
+            exit 1
+          }
+
+          version="${CANDIDATE%%-rc.*}"
+          expected="$(hack/release-version.sh main)"
+          [[ "${version}" == "${expected}" ]] ||
+            { echo "candidate says ${version}, Chart.yaml says ${expected}"; exit 1; }
+
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
 
       - uses: docker/setup-buildx-action@v3
       - uses: docker/login-action@v3
@@ -58,24 +65,8 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Promote the main images
-        env:
-          VERSION: ${{ steps.version.outputs.version }}
-          SOURCE_SHA: ${{ steps.version.outputs.source_sha }}
-        run: |
-          set -euo pipefail
-          for image in daemon operator; do
-            docker buildx imagetools inspect "${REGISTRY}/${image}:${SOURCE_SHA}" >/dev/null
-            docker buildx imagetools create \
-              --tag "${REGISTRY}/${image}:${VERSION}" \
-              "${REGISTRY}/${image}:${SOURCE_SHA}"
-          done
-
-      - name: Verify the release is the main commit
-        env:
-          SOURCE_SHA: ${{ steps.version.outputs.source_sha }}
-          VERSION: ${{ steps.version.outputs.version }}
-        run: make verify-promotion SOURCE_TAG="${SOURCE_SHA}" RELEASE_VERSION="${VERSION}"
+      - name: Verify selected component images
+        run: make verify-chart-images
 
       - uses: azure/setup-helm@v4
         with:
@@ -92,22 +83,22 @@ jobs:
       - name: Tag the release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          SOURCE_SHA: ${{ steps.version.outputs.source_sha }}
+          CANDIDATE: ${{ inputs.candidate }}
           VERSION: ${{ steps.version.outputs.version }}
         run: |
           set -euo pipefail
           {
-            echo "Promoted from main commit \`${SOURCE_SHA}\`."
-            echo "Identical image digests: the release is that main image promoted, not a rebuild."
+            echo "Promoted from \`v${CANDIDATE}\`."
+            echo "The chart values retain the immutable component image tags verified by the candidate."
             echo
             echo '```bash'
             echo "helm install thunder-device-plugin \\"
             echo "  oci://ghcr.io/thunder-compute/charts/thunder-device-plugin --version ${VERSION}"
             echo '```'
             echo
-            echo "Commit: https://github.com/${GITHUB_REPOSITORY}/commit/${SOURCE_SHA}"
+            echo "Changes: https://github.com/${GITHUB_REPOSITORY}/compare/v${CANDIDATE}...v${VERSION}"
           } > notes.md
           gh release create "v${VERSION}" \
-            --target "${SOURCE_SHA}" \
+            --target "${GITHUB_SHA}" \
             --title "v${VERSION}" \
             --notes-file notes.md

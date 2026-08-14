@@ -193,12 +193,10 @@ verify_chart_quality() {
   # to a different registry depending on the runtime, so neither may ship.
   check_not_contains "no image is pinned to latest" ":latest" "${main_manifest}"
 
-  local app_version
-  app_version="$("${HELM}" show chart "${CHART_MAIN}" | awk '/^appVersion:/ {gsub(/"/, "", $2); print $2}')"
-  check_contains "daemon defaults to the chart appVersion" \
-    "ghcr.io/thunder-compute/thunder-device-plugin/daemon:${app_version}" "${main_manifest}"
-  check_contains "operator defaults to the chart appVersion" \
-    "ghcr.io/thunder-compute/thunder-device-plugin/operator:${app_version}" "${main_manifest}"
+  check_contains "chart uses the released daemon repository" \
+    "ghcr.io/thunder-compute/thunder-device-plugin/daemon:" "${main_manifest}"
+  check_contains "chart uses the released operator repository" \
+    "ghcr.io/thunder-compute/thunder-device-plugin/operator:" "${main_manifest}"
 }
 
 "${SKIP_GO}" || verify_go
