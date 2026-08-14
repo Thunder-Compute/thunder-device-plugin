@@ -52,6 +52,10 @@ spec:
               value: {{ .Values.thunder.artifactBaseURL | quote }}
             - name: THUNDER_INSTALL_URL
               value: {{ .Values.thunder.installURL | default (printf "%s/install.sh" (trimSuffix "/" .Values.thunder.artifactBaseURL)) | quote }}
+            {{- with .Values.thunder.portRange }}
+            - name: THUNDER_PORT_RANGE
+              value: {{ . | quote }}
+            {{- end }}
             - name: MIN_DRIVER_VERSION
               value: {{ .Values.nvidia.minDriverVersion | quote }}
             - name: DRA_DRIVER_NAME
