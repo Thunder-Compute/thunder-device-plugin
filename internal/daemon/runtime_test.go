@@ -465,11 +465,18 @@ func (r *fakeRunner) CombinedOutput(_ context.Context, name string, args ...stri
 
 // RunShell records the command so a test can assert on what the daemon asked
 // the host to run, such as the Thunder installer and its environment.
-func (r *fakeRunner) RunShell(_ context.Context, command string) error {
+func (r *fakeRunner) RunShell(_ context.Context, _ string, command string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.commands = append(r.commands, command)
 	return nil
+}
+
+// Stream blocks like a real follow would, so a test that starts the daemon
+// does not spin restarting the log stream.
+func (r *fakeRunner) Stream(ctx context.Context, _ func(string), _ string, _ ...string) error {
+	<-ctx.Done()
+	return ctx.Err()
 }
 
 func mapLookup(values map[string]string) func(string) (string, bool) {

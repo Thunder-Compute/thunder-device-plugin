@@ -508,6 +508,17 @@ Details in [`hack/README.md`](hack/README.md).
 | Client resource stuck `Terminating` | Its `ResourceClaim` still exists; the finalizer holds it until the enrollment is revoked | `kubectl get clients.thundercompute.com -A -o wide` |
 | No slices at all | Operator cannot reach Thunder | `kubectl -n thunder-system logs -l app.kubernetes.io/component=operator` |
 
+Daemon pods republish thunderd's own journal from the node, one line at a time
+under a `thunderd:` prefix, so what thunderd did is visible next to what the
+daemon decided about it:
+
+```bash
+kubectl -n thunder-system logs -l app.kubernetes.io/component=daemon | grep '^thunderd:'
+```
+
+Set `THUNDERD_LOG_UNIT=off` on the daemon container to leave those logs on the
+node, or to another unit name if thunderd runs as one.
+
 ## Releases
 
 CI publishes and signs images for changes merged into `next`, then opens a

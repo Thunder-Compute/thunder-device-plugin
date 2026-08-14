@@ -17,7 +17,10 @@ type scriptedRunner struct {
 	statuses  []scriptedStatus
 	statusHit int
 	nvidia    map[string][]byte
+	// shell holds the commands that succeeded; attempted holds every command
+	// the daemon ran, including the ones shellErr failed.
 	shell     []string
+	attempted []string
 	shellErr  error
 }
 
@@ -36,7 +39,8 @@ func (r *scriptedRunner) CombinedOutput(_ context.Context, name string, args ...
 	return r.nvidia[key], nil
 }
 
-func (r *scriptedRunner) RunShell(_ context.Context, command string) error {
+func (r *scriptedRunner) RunShell(_ context.Context, _ string, command string) error {
+	r.attempted = append(r.attempted, command)
 	if r.shellErr != nil {
 		return r.shellErr
 	}
@@ -44,10 +48,26 @@ func (r *scriptedRunner) RunShell(_ context.Context, command string) error {
 	return nil
 }
 
+func (r *scriptedRunner) Stream(ctx context.Context, _ func(string), _ string, _ ...string) error {
+	<-ctx.Done()
+	return ctx.Err()
+}
+
 func (r *scriptedRunner) enrollments() int {
+	return countCommands(r.shell, "THUNDER_INSTALL_MODE=thunderd")
+}
+
+// restartAttempts counts the repairs that reused what the node already had
+// rather than downloading the CLI and spending an enrollment token on it,
+// including the ones that failed.
+func (r *scriptedRunner) restartAttempts() int {
+	return countCommands(r.attempted, "thunder up")
+}
+
+func countCommands(commands []string, substring string) int {
 	count := 0
-	for _, command := range r.shell {
-		if strings.Contains(command, "THUNDER_INSTALL_MODE=thunderd") {
+	for _, command := range commands {
+		if strings.Contains(command, substring) {
 			count++
 		}
 	}
@@ -421,5 +441,157 @@ func TestWithTransientThunderd(t *testing.T) {
 
 	if _, err := withTransientThunderd("curl -fsSL 'https://get.thundercompute.com/install.sh' | sh"); err == nil {
 		t.Fatal("withTransientThunderd accepted a command it could not add the setting to")
+	}
+}
+
+// The status a working node reports when thunderd was installed the way this
+// daemon installs it: running and answering, but transient, so systemd has no
+// unit file to call enabled and `thunder status` calls the node unhealthy.
+const transientHealthyStatus = `{"service":{"service":"thunderd.service","active":"active","enabled":"unknown","load":"loaded","subState":"running"},` +
+	`"localApi":{"healthy":true},"config":{"envPath":"/etc/thunder/thunderd.env","authTokenConfigured":true},"healthy":false,` +
+	`"warnings":[],"diagnostics":[],"recentLogs":["line"]}`
+
+// A transiently installed thunderd is never `enabled`, so `thunder status`
+// reports healthy=false on a node that is working. Believing it reinstalled
+// thunderd every ten seconds, downloading the CLI and minting an enrollment
+// token each pass.
+func TestReconcileLeavesATransientlyInstalledThunderdAlone(t *testing.T) {
+	runner := &scriptedRunner{statuses: []scriptedStatus{{output: transientHealthyStatus}}}
+	reconciler, registry := newTestReconciler(t, runner)
+
+	for pass := 0; pass < 5; pass++ {
+		if err := reconciler.reconcile(context.Background()); err != nil {
+			t.Fatalf("reconcile pass %d: %v", pass, err)
+		}
+	}
+
+	if got := runner.enrollments(); got != 0 {
+		t.Fatalf("enrollments on a healthy transient node = %d, want 0", got)
+	}
+	if got := runner.restartAttempts(); got != 0 {
+		t.Fatalf("restarts on a healthy transient node = %d, want 0", got)
+	}
+	if got := countCommands(paths(registry.writes()), "/api/v1/enrollment-tokens"); got != 0 {
+		t.Fatalf("enrollment tokens minted = %d, want 0", got)
+	}
+	if !reconciler.everHealthy {
+		t.Fatal("everHealthy = false, want the node counted as healthy")
+	}
+}
+
+// A node that is down but still holds its auth token needs thunderd started,
+// not installed: reinstalling re-downloads the CLI and spends a fresh
+// single-use enrollment token on a node Thunder has already enrolled.
+func TestReconcileRestartsAnEnrolledNodeInsteadOfReinstallingIt(t *testing.T) {
+	runner := &scriptedRunner{statuses: []scriptedStatus{{
+		output: `{"healthy":false,"service":{"service":"thunderd.service","active":"inactive","subState":"dead"},` +
+			`"localApi":{"healthy":false,"error":"socket missing"},"config":{"authTokenConfigured":true}}`,
+	}}}
+	reconciler, registry := newTestReconciler(t, runner)
+
+	if err := reconciler.reconcile(context.Background()); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	if got := runner.enrollments(); got != 0 {
+		t.Fatalf("enrollments for an enrolled node = %d, want 0", got)
+	}
+	if got := runner.restartAttempts(); got != 1 {
+		t.Fatalf("restarts = %d, want 1", got)
+	}
+	if got := countCommands(paths(registry.writes()), "/api/v1/enrollment-tokens"); got != 0 {
+		t.Fatalf("enrollment tokens minted = %d, want 0", got)
+	}
+
+	restart := runner.attempted[0]
+	for _, want := range []string{"THUNDERD_TRANSIENT=1", "thunder up", "--ip '10.0.0.5'", "--zone 'us-west-2a'", "--node-name 'node-a'"} {
+		if !strings.Contains(restart, want) {
+			t.Fatalf("restart command missing %q:\n%s", want, restart)
+		}
+	}
+	// A restart reuses the auth token on the node. Passing an enrollment token
+	// would mean one had been minted.
+	if strings.Contains(restart, "--token") || strings.Contains(restart, "curl") {
+		t.Fatalf("restart command enrolls the node again:\n%s", restart)
+	}
+}
+
+// A node whose thunderd is not enrolled at all cannot be restarted into
+// health, so it is installed and enrolled.
+func TestReconcileEnrollsANodeThatHasNoAuthToken(t *testing.T) {
+	runner := &scriptedRunner{statuses: []scriptedStatus{{
+		output: `{"healthy":false,"service":{"active":"inactive"},"config":{"authTokenConfigured":false}}`,
+	}}}
+	reconciler, _ := newTestReconciler(t, runner)
+
+	if err := reconciler.reconcile(context.Background()); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if got := runner.restartAttempts(); got != 0 {
+		t.Fatalf("restarts for a node with no auth token = %d, want 0", got)
+	}
+	if got := runner.enrollments(); got != 1 {
+		t.Fatalf("enrollments = %d, want 1", got)
+	}
+}
+
+// Restarting is the cheap repair, not the only one: a node that will not come
+// back up this way must not be left down forever.
+func TestReconcileReinstallsWhenRestartingKeepsFailing(t *testing.T) {
+	runner := &scriptedRunner{
+		statuses: []scriptedStatus{{output: `{"healthy":false,"service":{"active":"inactive"},"config":{"authTokenConfigured":true}}`}},
+		shellErr: errors.New("thunder: unknown flag --node-name"),
+	}
+	reconciler, _ := newTestReconciler(t, runner)
+	ctx := context.Background()
+
+	// Every pass fails while the node cannot be repaired at all, so the
+	// installer failure is what reconcile reports.
+	for pass := 0; pass < restartRepairLimit+2; pass++ {
+		if err := reconciler.reconcile(ctx); err == nil {
+			t.Fatalf("reconcile pass %d succeeded, want the repair failure surfaced", pass)
+		}
+	}
+	if got := runner.restartAttempts(); got != restartRepairLimit {
+		t.Fatalf("restart attempts = %d, want %d before the daemon gives up on them", got, restartRepairLimit)
+	}
+
+	// The installer works again, and the node recovers through it.
+	runner.shellErr = nil
+	if err := reconciler.reconcile(ctx); err != nil {
+		t.Fatalf("reconcile after the installer recovered: %v", err)
+	}
+	if got := runner.enrollments(); got != 1 {
+		t.Fatalf("enrollments = %d, want 1", got)
+	}
+}
+
+func paths(writes []recordedRequest) []string {
+	values := make([]string, 0, len(writes))
+	for _, write := range writes {
+		values = append(values, write.Path)
+	}
+	return values
+}
+
+// A restart that runs but leaves thunderd down must not become a loop of its
+// own: the daemon escalates to reinstalling the node.
+func TestReconcileReinstallsWhenRestartingDoesNotHelp(t *testing.T) {
+	runner := &scriptedRunner{statuses: []scriptedStatus{{
+		output: `{"healthy":false,"service":{"active":"inactive"},"config":{"authTokenConfigured":true}}`,
+	}}}
+	reconciler, _ := newTestReconciler(t, runner)
+
+	for pass := 0; pass < restartRepairLimit+1; pass++ {
+		if err := reconciler.reconcile(context.Background()); err != nil {
+			t.Fatalf("reconcile pass %d: %v", pass, err)
+		}
+	}
+
+	if got := runner.restartAttempts(); got != restartRepairLimit {
+		t.Fatalf("restart attempts = %d, want %d before the daemon reinstalls instead", got, restartRepairLimit)
+	}
+	if got := runner.enrollments(); got != 1 {
+		t.Fatalf("enrollments = %d, want 1", got)
 	}
 }

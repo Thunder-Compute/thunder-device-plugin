@@ -33,6 +33,7 @@ const (
 	EnvLibthunderURL       = "LIBTHUNDER_URL"
 	EnvLibthunderSHA256    = "LIBTHUNDER_SHA256"
 	EnvCABundlePath        = "CA_BUNDLE_PATH"
+	EnvThunderdLogUnit     = "THUNDERD_LOG_UNIT"
 )
 
 const (
@@ -56,6 +57,10 @@ const (
 	// DefaultCABundlePath is the node trust store staged into containers
 	// that ship none of their own.
 	DefaultCABundlePath = "/etc/ssl/certs/ca-certificates.crt"
+	// DefaultThunderdLogUnit is the systemd unit whose journal is republished
+	// as this pod's log, whether thunderd was installed as a unit file or, as
+	// the daemon installs it, transiently.
+	DefaultThunderdLogUnit = "thunderd.service"
 )
 
 type Config struct {
@@ -92,6 +97,10 @@ type Config struct {
 	LibthunderURL    string
 	LibthunderSHA256 string
 	CABundlePath     string
+	// ThunderdLogUnit is the systemd unit the daemon follows the journal of
+	// and republishes as its own log. Set it to "off" to leave thunderd's logs
+	// on the node.
+	ThunderdLogUnit string
 }
 
 func ConfigFromEnv() (Config, error) {
@@ -144,6 +153,7 @@ func configFromLookup(lookup func(string) (string, bool)) (Config, error) {
 		LibthunderURL:       optionalEnv(lookup, EnvLibthunderURL, ""),
 		LibthunderSHA256:    optionalEnv(lookup, EnvLibthunderSHA256, ""),
 		CABundlePath:        optionalEnv(lookup, EnvCABundlePath, DefaultCABundlePath),
+		ThunderdLogUnit:     optionalEnv(lookup, EnvThunderdLogUnit, DefaultThunderdLogUnit),
 	}, nil
 }
 
