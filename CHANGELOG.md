@@ -15,7 +15,9 @@ release they were promoted to. See [docs/RELEASING.md](docs/RELEASING.md).
   reports a transiently installed thunderd as unhealthy because a transient
   unit is never `enabled`, and the daemon believed it: every pass re-downloaded
   the Thunder CLI and spent a fresh enrollment token on a node that was already
-  enrolled and serving.
+  enrolled and serving. Health is now read from what thunderd answers — its
+  local API and its auth token — rather than from any status or systemd state
+  string.
 - A node that is enrolled but not running is restarted with the auth token it
   already has, instead of being reinstalled and enrolled again. The daemon
   falls back to reinstalling when restarting does not work.

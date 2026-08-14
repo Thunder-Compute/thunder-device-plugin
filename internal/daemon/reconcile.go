@@ -73,9 +73,9 @@ type reconciler struct {
 	passes         int
 	libthunderPath string
 
-	// statusSummary is the last thunderd status that was logged. Statuses are
+	// loggedStatus is the last thunderd status that was logged. Statuses are
 	// logged when they change rather than every pass.
-	statusSummary string
+	loggedStatus statusKey
 
 	// restarts counts the restarts attempted since thunderd was last healthy.
 	// See restartRepairLimit.
@@ -230,20 +230,23 @@ func (r *reconciler) ensureEnrolled(ctx context.Context, cfg Config) error {
 }
 
 // logStatus logs a thunderd status when it differs from the one logged last,
-// so a steady node reports its state once instead of every pass.
+// so a steady node reports its state once instead of every pass. What changed
+// is decided on the status fields, not on the line they produce.
 func (r *reconciler) logStatus(cfg Config, status thunderStatus, statusErr error) {
+	key := status.key()
 	if statusErr != nil {
-		summary := fmt.Sprintf("thunderd status unavailable on node %s: %v", cfg.Node, statusErr)
-		if summary != r.statusSummary {
-			log.Print(summary)
-			r.statusSummary = summary
-		}
+		key = unreadableStatusKey(statusErr)
+	}
+	if key == r.loggedStatus {
 		return
 	}
-	if summary := status.summary(); summary != r.statusSummary {
-		logThunderStatus(status)
-		r.statusSummary = summary
+	r.loggedStatus = key
+
+	if statusErr != nil {
+		log.Printf("thunderd status unavailable on node %s: %v", cfg.Node, statusErr)
+		return
 	}
+	logThunderStatus(status)
 }
 
 // restart brings thunderd back up with the credentials the node already has.
@@ -264,7 +267,11 @@ func (r *reconciler) restart(ctx context.Context, cfg Config) error {
 	return nil
 }
 
-// isTransitional reports whether thunderd is mid-transition.
+// isTransitional reports whether thunderd is mid-transition. This does read a
+// systemd state string, but it never calls a node healthy: it only buys a
+// service that is visibly on its way up or down some time before the daemon
+// repairs it. A state string this does not recognise costs that wait and
+// nothing else — the node is repaired sooner, not left broken.
 func isTransitional(status thunderStatus) bool {
 	_, ok := transitionalServiceStates[strings.TrimSpace(status.Service.Active)]
 	return ok
