@@ -11,11 +11,12 @@ release they were promoted to. See [docs/RELEASING.md](docs/RELEASING.md).
 
 ### Changed
 
-- Images are published to the canonical nested repositories under
-  `ghcr.io/thunder-compute/thunder-device-plugin`.
-- CI records the published source-commit image tag in `values.yaml`, so the
-  chart commit pins exactly what runs.
+- Images are published under `ghcr.io/thunder-compute/thunder-device-plugin`,
+  and each chart release records its tested image tags in `values.yaml`.
 
 ### Added
 
 - `image.digest` for both components, pinning past the tag when set.
+- `thunder.portRange`, declaring the host data ports thunderd binds on each
+  enrolled node. It defaults to the installer's regular `32000-32199` range and
+  can be set to a cluster-specific range such as `61000-61199`.
