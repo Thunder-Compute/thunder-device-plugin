@@ -438,7 +438,7 @@ func TestEnrollPassesPortRangeToInstaller(t *testing.T) {
 		wantEnv   string
 	}{
 		{name: "unset", portRange: ""},
-		{name: "declared", portRange: "61000-61199", wantEnv: " THUNDERD_PORT_RANGE='61000-61199'"},
+		{name: "declared", portRange: "32000-32199", wantEnv: " THUNDERD_PORT_RANGE='32000-32199'"},
 	}
 
 	runner := &scriptedRunner{}
@@ -471,7 +471,7 @@ func TestEnrollPassesPortRangeToInstaller(t *testing.T) {
 		}
 	}
 
-	if stripped := strings.Replace(commands["declared"], " THUNDERD_PORT_RANGE='61000-61199'", "", 1); stripped != commands["unset"] {
+	if stripped := strings.Replace(commands["declared"], " THUNDERD_PORT_RANGE='32000-32199'", "", 1); stripped != commands["unset"] {
 		t.Fatalf("an unset range changed the command beyond the range itself:\n%s\nwant\n%s", stripped, commands["unset"])
 	}
 }

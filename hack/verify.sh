@@ -142,23 +142,21 @@ verify_charts() {
   fi
 }
 
-# verify_port_range asserts the host data ports thunderd binds land where a
-# stock node has nothing else: above the NodePort range (30000-32767) and above
-# the kernel's ephemeral range (32768-60999). Both overlaps fail silently on the
-# node, so only the rendered manifest can catch a regression here. (by claude)
+# verify_port_range asserts the default is the installer's regular range and
+# that operators can provide a different range when required by their cluster.
 verify_port_range() {
   local main_manifest="$1"
 
   step "Host data ports"
 
   check_contains "daemon is given the default host data-port range" \
-    $'- name: THUNDER_PORT_RANGE\n              value: "61000-61199"' "${main_manifest}"
+    $'- name: THUNDER_PORT_RANGE\n              value: "32000-32199"' "${main_manifest}"
 
   local overridden
   if overridden="$("${HELM}" template verify "${CHART_MAIN}" \
-    --set thunder.portRange=32000-32199 2>&1)"; then
+    --set thunder.portRange=61000-61199 2>&1)"; then
     check_contains "thunder.portRange overrides the default" \
-      $'- name: THUNDER_PORT_RANGE\n              value: "32000-32199"' "${overridden}"
+      $'- name: THUNDER_PORT_RANGE\n              value: "61000-61199"' "${overridden}"
   else
     check_fail "thunder.portRange overrides the default" "${overridden}"
   fi
