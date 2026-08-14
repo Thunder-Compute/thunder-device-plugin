@@ -76,7 +76,7 @@ type Config struct {
 	// for CUDA traffic: a data and a control port per attached session. It is
 	// passed to the installer at enrollment. Empty leaves the installer's own
 	// default in place. Operators should choose a range that clears both the
-	// cluster's NodePort range and the kernel's ephemeral range. (by claude)
+	// cluster's NodePort range and the kernel's ephemeral range.
 	PortRange           string
 	ThunderAPIURL       string
 	ThunderAPIToken     string
@@ -199,7 +199,7 @@ func optionalBoolEnv(lookup func(string) (string, bool), key string, fallback bo
 
 // optionalPortRangeEnv reads a "start-end" port range. A malformed one fails
 // here, at startup, rather than reaching an enrollment that would leave the
-// node bound to ports nobody chose. (by claude)
+// node bound to ports nobody chose.
 func optionalPortRangeEnv(lookup func(string) (string, bool), key string) (string, error) {
 	value := optionalEnv(lookup, key, "")
 	if value == "" {
