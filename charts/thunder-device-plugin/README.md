@@ -109,19 +109,19 @@ typos and wrong types fail at install time rather than silently doing nothing.
 | `thunder.artifactBaseURL` | string | `https://get.thundercompute.com` | Host the Thunder client artifacts are downloaded from. The daemon fetches `libthunder.so` from here and stages it into every container that claims a GPU. Point at a staging artifact host to run unreleased client builds. |
 | `thunder.installURL` | string | `""` | Installer the daemon reads the pinned libthunder.so digest out of. It is read, never executed. Empty derives it as `<artifactBaseURL>/install.sh`. |
 | `thunder.telemetryURL` | string | `https://telemetry.thundercompute.com:2096` | Telemetry collector written into each container's Thunder client config. |
-| `thunder.portRange` | string | `61000-61199` | Host data ports thunderd binds on every enrolled node, as `start-end`. The default is clear of both the NodePort range (`30000-32767`) and the ephemeral range (`32768-60999`). See [Host data ports](#host-data-ports) |
+| `thunder.portRange` | string | `32000-32199` | Host data ports thunderd binds on every enrolled node, as `start-end`. Override this when the regular range overlaps your cluster's NodePort or ephemeral range. See [Host data ports](#host-data-ports) |
 
 #### Host data ports
 
 Every enrolled node runs thunderd, which binds a range of host ports for the
 CUDA traffic of attached GPUs: each session takes a data and a control port out
 of the range, so the range bounds how many sessions the node can serve.
-`thunder.portRange` declares that range, and the chart defaults it to
-`61000-61199`.
+`thunder.portRange` declares that range, and the chart defaults it to the
+Thunder installer's regular `32000-32199`.
 
-That default is the only 200-port window on a stock Linux node that nothing else
-already claims. A node's port map has two regions the data ports must stay out
-of:
+The regular range may overlap a cluster's NodePort range or the kernel's
+ephemeral range. A node's port map has two regions a custom range should stay
+out of:
 
 - **`30000-32767`, the NodePort range.** This is `--service-node-port-range` on
   the API server, and it is where Kubernetes hands out `NodePort` Services. An
@@ -136,34 +136,20 @@ of:
   the kernel has already handed to an outbound connection is not available to
   thunderd when it goes to bind it.
 
-`61000-61199` sits above both, so the chart installs safely on an unmodified
-cluster — including managed EKS, GKE and AKS, where `--service-node-port-range`
-is not a flag the customer can change at all.
-
-Set the value when your cluster has moved either range, or to opt back into the
-Thunder installer's historical default:
+Set the value when your cluster has moved either range. For example, this uses
+a range above the usual NodePort and ephemeral ranges:
 
 ```bash
 helm upgrade --install thunder-device-plugin charts/thunder-device-plugin \
-  --namespace thunder-system --set thunder.portRange=32000-32199
+  --namespace thunder-system --set thunder.portRange=61000-61199
 ```
 
-Setting it to `""` passes nothing and leaves the range to the installer, which
-also picks `32000-32199`.
+Setting it to `""` also passes nothing and leaves the range to the installer.
 
-##### Upgrading an existing fleet
-
-The range is applied at enrollment, so **an already-enrolled node keeps the range
-it was installed with**. Upgrading the chart does not move a running node's data
-ports; a node picks up the new default only when it re-enrolls. Before that
-happens:
-
-- **Open `61000-61199` in the firewalls and security groups in front of your
-  nodes.** A node that re-enrolls onto the new range with the ports still closed
-  is unreachable for CUDA traffic.
-- To keep the old behaviour instead, pin it explicitly with
-  `thunder.portRange: "32000-32199"` — and note that leaves the NodePort
-  collision described above in place.
+The range is applied at enrollment, so an already-enrolled node keeps the range
+it was installed with. If you override it, open the selected range in the
+firewalls and security groups in front of your nodes before they enroll or
+re-enroll.
 
 ### Operator
 
