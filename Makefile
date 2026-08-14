@@ -161,7 +161,12 @@ helm-template: ## Render the main chart to stdout
 
 .PHONY: helm-package
 helm-package: ## Package the chart as a .tgz
-	$(HELM) package $(CHART)
+	@semver='$(patsubst v%,%,$(VERSION))'; \
+	if [[ "$$semver" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-+].*)?$$ ]]; then \
+		$(HELM) package $(CHART) --version "$$semver" --app-version "$$semver"; \
+	else \
+		$(HELM) package $(CHART); \
+	fi
 
 .PHONY: helm-push
 helm-push: helm-package ## Package and push the chart to $(CHART_REGISTRY)
@@ -169,7 +174,8 @@ helm-push: helm-package ## Package and push the chart to $(CHART_REGISTRY)
 	if [[ "$$semver" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-+].*)?$$ ]]; then \
 		package="thunder-device-plugin-$$semver.tgz"; \
 	else \
-		package="$$(ls -t thunder-device-plugin-*.tgz | head -1)"; \
+		chart_version="$$(awk '/^version:/ {print $$2; exit}' $(CHART)/Chart.yaml)"; \
+		package="thunder-device-plugin-$$chart_version.tgz"; \
 	fi; \
 	echo "pushing $$package to $(CHART_REGISTRY)"; \
 	$(HELM) push "$$package" $(CHART_REGISTRY)

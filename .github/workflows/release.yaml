@@ -24,7 +24,7 @@ permissions:
 
 env:
   HELM_VERSION: v4.0.1
-  REGISTRY: ghcr.io/thunder-compute
+  REGISTRY: ghcr.io/thunder-compute/thunder-device-plugin
   CHART_REGISTRY: oci://ghcr.io/thunder-compute/charts
 
 jobs:
@@ -79,7 +79,7 @@ jobs:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
           set -euo pipefail
-          for image in thunder-device-plugin-daemon thunder-dra-operator; do
+          for image in daemon operator; do
             docker buildx imagetools create \
               --tag "${REGISTRY}/${image}:${VERSION}" \
               "${REGISTRY}/${image}:${CANDIDATE}"

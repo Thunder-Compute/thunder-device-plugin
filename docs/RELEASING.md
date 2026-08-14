@@ -79,7 +79,7 @@ fix straight to `main` skips the only evidence that it works.
 ```bash
 make verify-promotion CANDIDATE=0.2.0-rc.3 RELEASE_VERSION=0.2.0
 
-cosign verify ghcr.io/thunder-compute/thunder-dra-operator:0.2.0 \
+cosign verify ghcr.io/thunder-compute/thunder-device-plugin/operator:0.2.0 \
   --certificate-identity-regexp '^https://github.com/Thunder-Compute/thunder-device-plugin/' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```

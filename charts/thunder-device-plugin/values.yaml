@@ -33,8 +33,8 @@ operator:
   image:
     # -- Repository for the operator image.
     repository: ghcr.io/thunder-compute/thunder-device-plugin/operator
-    # -- Tag for the operator image.
-    tag: latest
+    # -- Tag for the operator image. Empty uses the chart appVersion.
+    tag: ""
     # -- Pull policy for the operator image. (Options: "Always", "IfNotPresent", "Never")
     pullPolicy: IfNotPresent
   # -- How often Thunder inventory is polled. New GPU models and capacity changes appear within this interval.
@@ -62,8 +62,8 @@ daemon:
   image:
     # -- Repository for the node daemon image.
     repository: ghcr.io/thunder-compute/thunder-device-plugin/daemon
-    # -- Tag for the node daemon image.
-    tag: latest
+    # -- Tag for the node daemon image. Empty uses the chart appVersion.
+    tag: ""
     # -- Pull policy for the node daemon image. (Options: "Always", "IfNotPresent", "Never")
     pullPolicy: IfNotPresent
   # -- Annotations added to daemon pods.

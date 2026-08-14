@@ -195,11 +195,10 @@ verify_chart_quality() {
 
   local app_version
   app_version="$("${HELM}" show chart "${CHART_MAIN}" | awk '/^appVersion:/ {gsub(/"/, "", $2); print $2}')"
-  local component
-  for component in thunder-dra-operator thunder-device-plugin-daemon; do
-    check_contains "${component} defaults to the chart appVersion" \
-      "ghcr.io/thunder-compute/${component}:${app_version}" "${main_manifest}"
-  done
+  check_contains "daemon defaults to the chart appVersion" \
+    "ghcr.io/thunder-compute/thunder-device-plugin/daemon:${app_version}" "${main_manifest}"
+  check_contains "operator defaults to the chart appVersion" \
+    "ghcr.io/thunder-compute/thunder-device-plugin/operator:${app_version}" "${main_manifest}"
 }
 
 "${SKIP_GO}" || verify_go

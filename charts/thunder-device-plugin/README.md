@@ -116,7 +116,7 @@ typos and wrong types fail at install time rather than silently doing nothing.
 | --- | --- | --- | --- |
 | `operator.enabled` | bool | `true` | Deploy the operator. Without it no GPUs are advertised |
 | `operator.image.repository` | string | `ghcr.io/thunder-compute/thunder-device-plugin/operator` | Operator image |
-| `operator.image.tag` | string | `latest` | Operator image tag |
+| `operator.image.tag` | string | `""` | Operator image tag; empty uses the chart appVersion |
 | `operator.image.pullPolicy` | string | `IfNotPresent` | Operator image pull policy |
 | `operator.reconcileInterval` | string | `60s` | How often Thunder inventory is polled |
 | `operator.orphanGracePeriod` | string | `5m` | How long a per-claim client resource may outlive its `ResourceClaim` before its Thunder enrollment is revoked and the resource removed |
@@ -133,7 +133,7 @@ typos and wrong types fail at install time rather than silently doing nothing.
 | Key | Type | Default | Description |
 | --- | --- | --- | --- |
 | `daemon.image.repository` | string | `ghcr.io/thunder-compute/thunder-device-plugin/daemon` | Daemon image |
-| `daemon.image.tag` | string | `latest` | Daemon image tag |
+| `daemon.image.tag` | string | `""` | Daemon image tag; empty uses the chart appVersion |
 | `daemon.image.pullPolicy` | string | `IfNotPresent` | Daemon image pull policy |
 | `daemon.podAnnotations` | object | `{}` | Annotations for daemon pods |
 | `daemon.podLabels` | object | `{}` | Labels for daemon pods |

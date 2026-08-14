@@ -19,7 +19,7 @@ candidate="${1:-}"
 release="${2:-}"
 [[ -n "${candidate}" && -n "${release}" ]] || die "usage: $(basename "$0") <candidate> <release>"
 
-REGISTRY="${REGISTRY:-ghcr.io/thunder-compute}"
+REGISTRY="${REGISTRY:-ghcr.io/thunder-compute/thunder-device-plugin}"
 
 # digest <image:tag> prints the manifest digest without pulling the image.
 digest() {
@@ -31,7 +31,7 @@ digest() {
 }
 
 step "Promotion"
-for image in thunder-device-plugin-daemon thunder-dra-operator; do
+for image in daemon operator; do
   from="$(digest "${REGISTRY}/${image}:${candidate}")"
   to="$(digest "${REGISTRY}/${image}:${release}")"
   if [[ "${from}" == "${to}" ]]; then
