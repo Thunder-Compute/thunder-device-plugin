@@ -42,7 +42,7 @@
         },
         "tag": {
           "type": "string",
-          "description": "Image tag. Release commits record the tag published by make publish-images."
+          "description": "Image tag. Empty falls back to the chart appVersion."
         },
         "pullPolicy": {
           "enum": [

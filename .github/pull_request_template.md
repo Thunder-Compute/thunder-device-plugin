@@ -1,4 +1,4 @@
-<!-- Pull requests target `next`. See CONTRIBUTING.md. -->
+<!-- Pull requests target `main`. See CONTRIBUTING.md. -->
 
 ## What changed
 

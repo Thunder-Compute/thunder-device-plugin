@@ -2,8 +2,8 @@
 
 ## Where changes go
 
-Pull requests target **`next`**. Release candidates are tested there before
-`main` is fast-forwarded to the selected candidate — see
+Pull requests target **`main`**, the integration and release branch. Every
+commit merged into `main` publishes immutable daemon and operator images — see
 [docs/RELEASING.md](docs/RELEASING.md).
 
 ## Before opening a pull request
@@ -22,9 +22,8 @@ CI runs both on every pull request.
   The schema rejects unknown keys, so a value that is not in it cannot be set.
 - Never make the chart create the Thunder API token Secret. It takes the name
   of an existing one, so a token cannot end up in a release history.
-- Published image tags are recorded explicitly in `values.yaml`. Run
-  `make publish-images` after changing the images; it publishes both
-  components with one generated tag and updates the chart before you commit.
+- Image tags stay empty in `values.yaml`. They follow `appVersion`, which is
+  what makes a chart version pin the whole install.
 - Do not add anything that only makes sense in one particular cluster. Every
   deployment should be a plain values overlay on top of this chart, ours
   included. If a cluster needs something the chart cannot express, that is a
@@ -32,6 +31,6 @@ CI runs both on every pull request.
 
 ## Versioning
 
-`Chart.yaml` carries the chart version being prepared. Candidate versions are
-derived from the commits since `main`; the release workflow packages the
-version already present in `Chart.yaml` and does not change image tags.
+`Chart.yaml` carries the default chart version used for local renders. The
+release workflow supplies the chosen release version when it packages the
+chart; do not create release versions on a separate branch.

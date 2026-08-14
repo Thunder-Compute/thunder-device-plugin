@@ -14,12 +14,13 @@ Fixes go to the most recent release. There are no long-term support branches.
 
 ## Verifying what you install
 
-Released chart values record the image tags that were published and verified
-for that release. Resolve an image tag to its immutable manifest digest with:
+Images and charts are signed with [cosign](https://docs.sigstore.dev/) from
+GitHub Actions, keyless:
 
 ```bash
-docker buildx imagetools inspect \
-  ghcr.io/thunder-compute/thunder-device-plugin/operator:<tag>
+cosign verify ghcr.io/thunder-compute/thunder-device-plugin/operator:<version> \
+  --certificate-identity-regexp '^https://github.com/Thunder-Compute/thunder-device-plugin/' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```
 
 ## Notes on the components

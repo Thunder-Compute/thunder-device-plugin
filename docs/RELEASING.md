@@ -1,79 +1,67 @@
 # Releasing
 
-The release unit is the chart composition in Git. The component images are
-published first, then the exact image tag is written into
-`charts/thunder-device-plugin/values.yaml` before that change is committed and
-pushed.
+`main` is the integration and release branch. Pull requests target `main`, and
+every commit merged into it publishes both component images tagged with the
+full Git commit SHA:
 
 ```text
-make publish-images
-    ├── ghcr.io/thunder-compute/thunder-device-plugin/daemon:<generated-tag>
-    ├── ghcr.io/thunder-compute/thunder-device-plugin/operator:<generated-tag>
-    └── values.yaml records <generated-tag> for both images
+main commit
+    ├── ghcr.io/thunder-compute/thunder-device-plugin/daemon:<commit-sha>
+    └── ghcr.io/thunder-compute/thunder-device-plugin/operator:<commit-sha>
 ```
 
-The image tag is a generated UTC build timestamp. It is an image identifier,
-not a release-candidate or release-version suffix. The important pin is the
-committed value in the chart.
+The SHA-tagged images are immutable build artifacts. The release workflow
+promotes those exact image manifests to a human-readable release version; it
+does not compile or rebuild them.
 
 ## The workflow
 
-1. Make the code change on `next` and run the local checks:
+1. Open a pull request against `main`. CI runs static checks, unit tests, chart
+   rendering, and the kind cluster test.
 
-   ```bash
-   make check
-   ```
+2. Merge the pull request into `main`. `publish-images.yaml` builds and signs
+   the daemon and operator from that exact commit, publishing both images under
+   the commit SHA.
 
-2. Publish the component images and update the chart values in one command:
+3. Test the SHA-tagged images and source commit as needed. The image tag lets
+   an installation identify exactly which source commit it runs.
 
-   ```bash
-   make publish-images
-   ```
+4. Run the `release` workflow from `main`, supplying a semantic version such as
+   `0.2.0`. The workflow verifies that the selected `main` commit's images
+   exist, retags their manifests as `0.2.0`, verifies the digests match, and
+   publishes the Helm chart at version `0.2.0`.
 
-   To choose a tag explicitly, use `make publish-images IMAGE_TAG=20260814T153000Z`.
-   The command builds and pushes both images with that same tag, then updates
-   `operator.image.tag` and `daemon.image.tag` in `values.yaml`. Review that
-   file, commit it with the code change, and push `next`.
-
-3. The `release-candidate` workflow runs on `next`. It verifies that both
-   image references recorded in `values.yaml` exist, packages the chart, and
-   creates a prerelease. It does not build a second image or invent another
-   tag.
-
-4. Test the candidate chart. When it is ready, fast-forward `main` to the
-   candidate commit.
-
-5. Run the `release` workflow from `main`, supplying the candidate (for
-   example, `0.2.0-rc.3`). It verifies that `main` is exactly that candidate,
-   checks the same image references again, and publishes the chart using the
-   version in `Chart.yaml`. It does not rebuild or retag component images.
-
-6. After promotion, bump `Chart.yaml` on `next` for the next release.
+The chart leaves `operator.image.tag` and `daemon.image.tag` empty, so packaged
+`appVersion` supplies the release image tag. A chart release therefore points
+at the images promoted by the same release workflow.
 
 ## Image references
 
-The image repositories are shared by the Makefile, chart, and workflows:
+The image repositories are shared by the Makefile, image workflow, chart, and
+promotion verification:
 
 ```text
 ghcr.io/thunder-compute/thunder-device-plugin/daemon:<tag>
 ghcr.io/thunder-compute/thunder-device-plugin/operator:<tag>
 ```
 
-The chart's values file records the tag selected for each release. This is
-needed because Thundernetes renders this chart directly from the pinned Git
-commit; it does not infer image tags from a packaged OCI chart's `appVersion`.
+The commit-SHA tags identify normal `main` builds. Release tags identify the
+same manifests after promotion.
 
 ## Checking a release by hand
 
 ```bash
-make verify-chart-images
-docker buildx imagetools inspect \
-  ghcr.io/thunder-compute/thunder-device-plugin/operator:<tag>
+make verify-promotion \
+  SOURCE_TAG=<main-commit-sha> \
+  RELEASE_VERSION=0.2.0
+
+cosign verify ghcr.io/thunder-compute/thunder-device-plugin/operator:0.2.0 \
+  --certificate-identity-regexp '^https://github.com/Thunder-Compute/thunder-device-plugin/' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```
 
 ## Hotfixes
 
-Open a pull request against `next`, run `make publish-images` after the image
-changes are ready, commit the resulting values update, and let the candidate
-workflow validate it. Promote that candidate through `main` using the normal
-workflow.
+Open a pull request against `main`, let CI validate it, merge it, and wait for
+the image publishing workflow to complete. Release that resulting `main`
+commit through the normal workflow.
