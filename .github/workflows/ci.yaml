@@ -1,5 +1,4 @@
-# Every change is checked the same way, whether it is heading for a release
-# candidate or straight into the release line.
+# Every change is checked before it lands on the candidate or release branch.
 name: ci
 
 on:

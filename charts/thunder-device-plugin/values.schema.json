@@ -33,7 +33,6 @@
       "additionalProperties": false,
       "required": [
         "repository",
-        "tag",
         "pullPolicy"
       ],
       "properties": {
@@ -43,8 +42,7 @@
         },
         "tag": {
           "type": "string",
-          "minLength": 1,
-          "description": "Image tag selected by this chart release."
+          "description": "Image tag. CI records the published source-commit tag here before release."
         },
         "pullPolicy": {
           "enum": [

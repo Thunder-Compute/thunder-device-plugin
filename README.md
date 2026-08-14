@@ -510,13 +510,12 @@ Details in [`hack/README.md`](hack/README.md).
 
 ## Releases
 
-Component images are immutable UTC-tagged builds published independently of
-chart releases. Changes land on `next`, which stages the next chart release and
-publishes a source candidate. Once that composition is ready, `main`
-fast-forwards onto it and the chart release is tagged.
+CI publishes and signs images for changes merged into `next`, then opens a
+reviewable PR that records those source-commit tags in `values.yaml`. The
+release workflow verifies those exact image references and packages the chart
+without rebuilding or retagging images.
 
-The chart records its production image tags in `values.yaml`, so each chart
-version selects an explicit, tested component combination. Contributors: see
+Contributors: see
 [CONTRIBUTING.md](CONTRIBUTING.md) and [docs/RELEASING.md](docs/RELEASING.md).
 
 ## Repository layout

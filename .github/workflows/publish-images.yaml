@@ -1,0 +1,118 @@
+# CI owns image publication. A merge to `next` builds images tagged with the
+# source commit SHA, then opens a visible PR recording those tags in the chart.
+# The values PR must be merged before `next` is promoted to `main`.
+name: publish-images
+
+on:
+  push:
+    branches: [next]
+    paths-ignore:
+      - charts/thunder-device-plugin/values.yaml
+  workflow_dispatch:
+
+concurrency:
+  group: publish-images-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  packages: write
+  id-token: write
+
+env:
+  REGISTRY: ghcr.io/thunder-compute/thunder-device-plugin
+
+jobs:
+  publish:
+    name: publish images and propose chart update
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: next
+          fetch-depth: 0
+
+      - name: Require next
+        run: |
+          [[ "${GITHUB_REF}" == "refs/heads/next" ]] || {
+            echo "image publishing must run from next, got ${GITHUB_REF}"
+            exit 1
+          }
+
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: daemon
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: containers/daemon/Dockerfile
+          push: true
+          platforms: linux/amd64
+          provenance: true
+          sbom: true
+          build-args: |
+            VERSION=${{ github.sha }}
+            COMMIT=${{ github.sha }}
+          tags: ${{ env.REGISTRY }}/daemon:${{ github.sha }}
+
+      - id: operator
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: containers/operator/Dockerfile
+          push: true
+          platforms: linux/amd64
+          provenance: true
+          sbom: true
+          build-args: |
+            VERSION=${{ github.sha }}
+            COMMIT=${{ github.sha }}
+          tags: ${{ env.REGISTRY }}/operator:${{ github.sha }}
+
+      - uses: sigstore/cosign-installer@v3
+      - name: Sign the images
+        run: |
+          cosign sign --yes \
+            "${REGISTRY}/daemon@${{ steps.daemon.outputs.digest }}"
+          cosign sign --yes \
+            "${REGISTRY}/operator@${{ steps.operator.outputs.digest }}"
+
+      - name: Update chart image tags
+        run: hack/update-image-tags.sh "${GITHUB_SHA}"
+
+      - name: Open chart values pull request
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          branch="automation/image-tags-${GITHUB_SHA}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "${branch}"
+          git add charts/thunder-device-plugin/values.yaml
+          if git diff --cached --quiet; then
+            echo "chart already records ${GITHUB_SHA}; no values PR needed"
+            exit 0
+          fi
+          git commit -m "chore: pin images for ${GITHUB_SHA}"
+
+          if git ls-remote --exit-code --heads origin "${branch}" >/dev/null 2>&1; then
+            echo "${branch} already exists; leaving its pull request unchanged"
+          else
+            git push origin "${branch}"
+          fi
+
+          existing_prs="$(gh pr list --repo "${GITHUB_REPOSITORY}" --head "${branch}" --base next --json number --jq 'length')"
+          if [[ "${existing_prs}" == "0" ]]; then
+            gh pr create \
+              --repo "${GITHUB_REPOSITORY}" \
+              --base next \
+              --head "${branch}" \
+              --title "chore: pin images for ${GITHUB_SHA}" \
+              --body "CI published daemon and operator images for ${GITHUB_SHA}. Merge this PR before promoting next to main."
+          fi
