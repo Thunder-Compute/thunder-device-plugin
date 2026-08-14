@@ -430,7 +430,7 @@ func TestReconcileReenrollsPromptlyOnAFailedService(t *testing.T) {
 // A declared host data-port range must reach the installer, and no declared
 // range must leave the command exactly as it was before the setting existed.
 // Both enrollments run against one reconciler so the rest of the command (API
-// URL, enrollment token) is identical and only the range can differ. (by claude)
+// URL, enrollment token) is identical and only the range can differ.
 func TestEnrollPassesPortRangeToInstaller(t *testing.T) {
 	tests := []struct {
 		name      string

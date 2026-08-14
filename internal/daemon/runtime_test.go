@@ -68,7 +68,7 @@ func TestConfigFromLookupAllowsNodeLabelFallbacks(t *testing.T) {
 }
 
 // A malformed host data-port range has to fail at startup: the daemon would
-// otherwise enroll the node with ports nobody chose. (by claude)
+// otherwise enroll the node with ports nobody chose.
 func TestConfigFromLookupPortRange(t *testing.T) {
 	tests := []struct {
 		name    string
