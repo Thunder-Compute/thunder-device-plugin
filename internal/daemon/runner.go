@@ -64,7 +64,10 @@ func (r osCommandRunner) Stream(ctx context.Context, onLine func(string), name s
 // pipe is drained after the scan loop so a line too long to buffer stalls the
 // log rather than the command that is writing it.
 func (r osCommandRunner) stream(ctx context.Context, onLine func(string), name string, args ...string) error {
-	cmd := r.command(ctx, name, args...)
+	cmdCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	cmd := r.command(cmdCtx, name, args...)
 	reader, writer := io.Pipe()
 	cmd.Stdout = writer
 	cmd.Stderr = writer
@@ -79,6 +82,10 @@ func (r osCommandRunner) stream(ctx context.Context, onLine func(string), name s
 			if line := strings.TrimRight(scanner.Text(), "\r"); strings.TrimSpace(line) != "" {
 				onLine(line)
 			}
+		}
+		if scanner.Err() == bufio.ErrTooLong {
+			cancel()
+			return
 		}
 		_, _ = io.Copy(io.Discard, reader)
 	}()
