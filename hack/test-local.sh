@@ -49,7 +49,13 @@ LOCAL_IMAGE_TAG="test"
 CLUSTER="${CLUSTER:-thunder-local}"
 # 1.36 is the first release where DRAExtendedResource is beta and on by default.
 # The kind config enables it explicitly so older images work too.
-NODE_IMAGE="${NODE_IMAGE:-kindest/node:v1.36.1}"
+DEFAULT_NODE_IMAGE="kindest/node:v1.36.1"
+NODE_IMAGE="${NODE_IMAGE:-${DEFAULT_NODE_IMAGE}}"
+# MIN_KIND_VERSION is the kind release DEFAULT_NODE_IMAGE ships with, and moves
+# with it. An older kind creates the cluster from a newer node image and only
+# fails later, loading images into it, with "unknown containerd config version"
+# — which says nothing about the version skew that caused it.
+MIN_KIND_VERSION="v0.32.0"
 STUB_PORT="${STUB_PORT:-0}"
 STUB_HOST=""
 STUB_URL=""
@@ -76,6 +82,20 @@ done
 require_cmd docker kubectl helm go jq curl
 if ! command -v "${KIND}" >/dev/null 2>&1; then
   die "kind is required: https://kind.sigs.k8s.io/docs/user/quick-start/#installation"
+fi
+
+# Only the node image this script pins carries a version requirement with it.
+# An explicit --node-image is someone testing an older Kubernetes on the kind
+# that ships it, which is exactly what the feature gate in the kind config is
+# there for.
+if [[ "${NODE_IMAGE}" == "${DEFAULT_NODE_IMAGE}" ]]; then
+  # Lowercase because it is incidental to this check, and because CI exports a
+  # KIND_VERSION of its own naming the kind it installed.
+  kind_version="$("${KIND}" version 2>/dev/null | awk '{print $2}')"
+  [[ -n "${kind_version}" ]] || die "could not read the version of ${KIND}"
+  if [[ "$(printf '%s\n%s\n' "${MIN_KIND_VERSION}" "${kind_version}" | sort -V | head -1)" != "${MIN_KIND_VERSION}" ]]; then
+    die "kind ${MIN_KIND_VERSION} or newer is required for ${NODE_IMAGE}, found ${kind_version}. Upgrade kind, or pass --node-image for the Kubernetes version your kind ships."
+  fi
 fi
 
 WORK_DIR="$(mktemp -d)"

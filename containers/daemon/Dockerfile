@@ -37,7 +37,7 @@ LABEL org.opencontainers.image.title="thunder-device-plugin-daemon" \
       org.opencontainers.image.revision="${COMMIT}"
 
 # util-linux provides nsenter, which the daemon uses to run the Thunder
-# installer in the host namespaces.
+# installer and read thunderd's journal in the host namespaces.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates util-linux \
     && rm -rf /var/lib/apt/lists/*

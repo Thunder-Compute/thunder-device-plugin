@@ -16,6 +16,10 @@ permissions:
 
 env:
   HELM_VERSION: v4.0.1
+  # The kind release that ships the node image hack/test-local.sh pins. The
+  # action defaults to an older one, which creates the cluster and then cannot
+  # load images into it.
+  KIND_VERSION: v0.32.0
 
 jobs:
   check:
@@ -48,6 +52,7 @@ jobs:
           version: ${{ env.HELM_VERSION }}
       - uses: helm/kind-action@v1
         with:
+          version: ${{ env.KIND_VERSION }}
           install_only: true
       # Installs the chart on a throwaway cluster and drives a real
       # ResourceClaim through scheduling against a stub Thunder API.
