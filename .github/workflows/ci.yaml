@@ -1,12 +1,11 @@
-# Every change is checked the same way, whether it is heading for a release
-# candidate or straight into the release line.
+# Every change is checked before it lands on the integration and release branch.
 name: ci
 
 on:
   pull_request:
-    branches: [next, main]
+    branches: [main]
   push:
-    branches: [next, main]
+    branches: [main]
 
 concurrency:
   group: ci-${{ github.ref }}

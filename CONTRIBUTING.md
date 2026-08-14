@@ -2,8 +2,8 @@
 
 ## Where changes go
 
-Pull requests target **`next`**, which stages the next release. `main` is the
-live release and only ever fast-forwards onto a candidate — see
+Pull requests target **`main`**, the integration and release branch. Every
+commit merged into `main` publishes immutable daemon and operator images — see
 [docs/RELEASING.md](docs/RELEASING.md).
 
 ## Before opening a pull request
@@ -31,6 +31,6 @@ CI runs both on every pull request.
 
 ## Versioning
 
-`Chart.yaml` carries the version being cooked. Bump it when a release goes out,
-not while working on one, and never hand-edit it to a candidate version —
-`hack/release-version.sh` derives those.
+`Chart.yaml` carries the default chart version used for local renders. The
+release workflow supplies the chosen release version when it packages the
+chart; do not create release versions on a separate branch.

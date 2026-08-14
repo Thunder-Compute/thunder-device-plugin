@@ -5,7 +5,7 @@ type: application
 
 # The chart version is authoritative for packaged Helm releases. The
 # appVersion is the default image tag for source renders; release packaging
-# overrides both from VERSION so candidates and releases select their images.
+# overrides both from VERSION so releases select their promoted images.
 version: 0.1.0
 appVersion: "0.1.0"
 

@@ -196,13 +196,9 @@ verify: ## Offline checks: Go build/vet/test plus chart renders
 test-local: ## Integration test on a throwaway local kind cluster
 	hack/test-local.sh
 
-.PHONY: release-version
-release-version: ## Print the version this commit would be released as
-	@hack/release-version.sh
-
 .PHONY: verify-promotion
-verify-promotion: ## Assert a release is its candidate re-tagged (CANDIDATE=0.2.0-rc.3 RELEASE_VERSION=0.2.0)
-	hack/verify-promotion.sh "$(CANDIDATE)" "$(RELEASE_VERSION)"
+verify-promotion: ## Assert a release is the source image re-tagged (SOURCE_TAG=git-sha RELEASE_VERSION=0.2.0)
+	hack/verify-promotion.sh "$(SOURCE_TAG)" "$(RELEASE_VERSION)"
 
 .PHONY: preflight
 preflight: ## Diagnose whether an existing cluster can run the driver (read-only)
