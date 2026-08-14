@@ -3,9 +3,10 @@ name: thunder-device-plugin
 description: Attach Thunder Compute GPUs to Kubernetes pods and KubeVirt VMs through Dynamic Resource Allocation
 type: application
 
-# The chart version is authoritative for packaged Helm releases. The daemon
-# and operator versions are their image tags in values.yaml.
+# The chart version is authoritative for packaged Helm releases. CI records
+# the exact published image tags explicitly in values.yaml before release.
 version: 0.1.0
+appVersion: "0.1.0"
 
 kubeVersion: ">=1.34.0-0"
 

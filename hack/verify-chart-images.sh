@@ -6,12 +6,10 @@
 set -euo pipefail
 
 source "$(dirname "${BASH_SOURCE[0]}")/lib/common.sh"
-cd "${REPO_ROOT}"
 
+cd "${REPO_ROOT}"
 values="charts/thunder-device-plugin/values.yaml"
 
-# image_field <component> <field> reads one image field without adding a YAML
-# parser to the release toolchain. The chart schema verifies the same shape.
 image_field() {
   local component="$1"
   local field="$2"
@@ -38,19 +36,22 @@ digest() {
 }
 
 step "Chart images"
+common_tag=""
 for component in daemon operator; do
   repository="$(image_field "${component}" repository)"
   tag="$(image_field "${component}" tag)"
   [[ -n "${repository}" && -n "${tag}" ]] ||
     die "${component}.image.repository and tag must be set in ${values}"
-  [[ "${tag}" =~ ^[0-9]{8}T[0-9]{6}Z$ ]] ||
-    die "${component}.image.tag is not a UTC build timestamp: ${tag}"
+  [[ "${tag}" =~ ^[a-z0-9_][a-z0-9_.-]{0,127}$ ]] ||
+    die "${component}.image.tag is invalid: ${tag}"
+  if [[ -n "${common_tag}" && "${tag}" != "${common_tag}" ]]; then
+    die "daemon and operator do not use the same image tag"
+  fi
+  common_tag="${tag}"
 
   reference="${repository}:${tag}"
   manifest="$(digest "${reference}")"
   [[ "${manifest}" =~ ^sha256:[a-f0-9]{64}$ ]] ||
     die "could not resolve a manifest digest for ${reference}: ${manifest}"
-  check_pass "${reference} exists (${manifest})"
+  pass "${reference} exists (${manifest})"
 done
-
-summarize "verify-chart-images"

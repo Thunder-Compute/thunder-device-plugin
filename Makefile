@@ -161,12 +161,22 @@ helm-template: ## Render the main chart to stdout
 
 .PHONY: helm-package
 helm-package: ## Package the chart as a .tgz
-	$(HELM) package $(CHART)
+	@semver='$(patsubst v%,%,$(VERSION))'; \
+	if [[ "$$semver" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-+].*)?$$ ]]; then \
+		$(HELM) package $(CHART) --version "$$semver" --app-version "$$semver"; \
+	else \
+		$(HELM) package $(CHART); \
+	fi
 
 .PHONY: helm-push
 helm-push: helm-package ## Package and push the chart to $(CHART_REGISTRY)
-	@chart_version="$$(awk '/^version:/ {print $$2; exit}' $(CHART)/Chart.yaml)"; \
-	package="thunder-device-plugin-$${chart_version}.tgz"; \
+	@semver='$(patsubst v%,%,$(VERSION))'; \
+	if [[ "$$semver" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-+].*)?$$ ]]; then \
+		package="thunder-device-plugin-$$semver.tgz"; \
+	else \
+		chart_version="$$(awk '/^version:/ {print $$2; exit}' $(CHART)/Chart.yaml)"; \
+		package="thunder-device-plugin-$$chart_version.tgz"; \
+	fi; \
 	echo "pushing $$package to $(CHART_REGISTRY)"; \
 	$(HELM) push "$$package" $(CHART_REGISTRY)
 
@@ -186,12 +196,8 @@ verify: ## Offline checks: Go build/vet/test plus chart renders
 test-local: ## Integration test on a throwaway local kind cluster
 	hack/test-local.sh
 
-.PHONY: release-version
-release-version: ## Print the version this commit would be released as
-	@hack/release-version.sh
-
 .PHONY: verify-chart-images
-verify-chart-images: ## Verify the timestamped images selected by values.yaml exist
+verify-chart-images: ## Verify the images selected by values.yaml exist
 	hack/verify-chart-images.sh
 
 .PHONY: preflight

@@ -2,9 +2,9 @@
 
 ## Where changes go
 
-Pull requests target **`next`**, which stages the next release. `main` is the
-live release and only ever fast-forwards onto a candidate — see
-[docs/RELEASING.md](docs/RELEASING.md).
+Pull requests target **`next`**. CI publishes images for changes merged there
+and opens a reviewable chart-values PR before the result is promoted to
+`main` — see [docs/RELEASING.md](docs/RELEASING.md).
 
 ## Before opening a pull request
 
@@ -22,8 +22,8 @@ CI runs both on every pull request.
   The schema rejects unknown keys, so a value that is not in it cannot be set.
 - Never make the chart create the Thunder API token Secret. It takes the name
   of an existing one, so a token cannot end up in a release history.
-- Released image tags live in `values.yaml`. Change them only when promoting
-  component builds that have been tested with that chart.
+- CI records the published source-commit image tag explicitly in `values.yaml`.
+  Do not hand-edit these tags; merge the CI-generated values PR instead.
 - Do not add anything that only makes sense in one particular cluster. Every
   deployment should be a plain values overlay on top of this chart, ours
   included. If a cluster needs something the chart cannot express, that is a
@@ -31,6 +31,6 @@ CI runs both on every pull request.
 
 ## Versioning
 
-`Chart.yaml` carries the version being cooked. Bump it when a release goes out,
-not while working on one, and never hand-edit it to a candidate version —
-`hack/release-version.sh` derives those.
+`Chart.yaml` carries the default chart version used for local renders. The
+release workflow supplies the chosen release version when it packages the
+chart. Promote only after the CI-generated image-values PR has merged.

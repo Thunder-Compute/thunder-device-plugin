@@ -37,13 +37,14 @@ socket path always matches the driver name the kubelet registered. */}}
 {{- printf "%s/%s" (trimSuffix "/" .Values.kubelet.pluginDirRoot) .Values.driverName -}}
 {{- end -}}
 
-{{/* Image reference for one component. values.yaml records the released image
-tag, while a digest takes precedence when one is set. */}}
+{{/* Image reference for one component. The tag defaults to the chart's
+appVersion, so a chart version pins the images it was released with, and a
+digest takes precedence when one is set. */}}
 {{- define "thunder-device-plugin.image" -}}
 {{- $image := .image -}}
 {{- if $image.digest -}}
 {{- printf "%s@%s" $image.repository $image.digest -}}
 {{- else -}}
-{{- printf "%s:%s" $image.repository $image.tag -}}
+{{- printf "%s:%s" $image.repository ($image.tag | default .root.Chart.AppVersion) -}}
 {{- end -}}
 {{- end -}}

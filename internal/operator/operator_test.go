@@ -11,7 +11,9 @@ import (
 
 	resourcev1 "k8s.io/api/resource/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes/fake"
+	k8stesting "k8s.io/client-go/testing"
 
 	thunder "github.com/Thunder-Compute/thunder-sdk"
 )
@@ -149,6 +151,46 @@ func TestSyncCreatesUpdatesAndDeletesResourceSlices(t *testing.T) {
 	}
 	if len(list.Items) != 0 {
 		t.Fatalf("ResourceSlices remaining after capacity disappeared = %d, want 0", len(list.Items))
+	}
+}
+
+func TestSyncContinuesPastFailingPool(t *testing.T) {
+	kube := fake.NewSimpleClientset()
+	kube.PrependReactor("create", "resourceslices", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		slice := action.(k8stesting.CreateAction).GetObject().(*resourcev1.ResourceSlice)
+		if strings.Contains(slice.Spec.Pool.Name, "aaa-zone") {
+			return true, nil, errors.New("apiserver rejected aaa-zone")
+		}
+		return false, nil, nil
+	})
+	inventory := &fakeInventory{
+		zones: []thunder.Zone{
+			{ZoneID: "z1", DisplayName: "aaa-zone"},
+			{ZoneID: "z2", DisplayName: "bbb-zone"},
+		},
+		nodes: map[string][]thunder.Server{
+			"z1": {{GPUType: "T4", GPUCount: 1, Status: "active"}},
+			"z2": {{GPUType: "A6000", GPUCount: 1, Status: "active"}},
+		},
+	}
+	op := New(testConfig(), kube, nil, inventory, nil)
+
+	err := op.Sync(context.Background())
+	if err == nil {
+		t.Fatal("Sync error = nil, want joined error containing the aaa-zone failure")
+	}
+	list, listErr := kube.ResourceV1().ResourceSlices().List(context.Background(), metav1.ListOptions{})
+	if listErr != nil {
+		t.Fatalf("list ResourceSlices: %v", listErr)
+	}
+	var foundB bool
+	for _, s := range list.Items {
+		if strings.Contains(s.Spec.Pool.Name, "bbb-zone") {
+			foundB = true
+		}
+	}
+	if !foundB {
+		t.Fatalf("bbb-zone pool not published; failing aaa-zone pool starved it (slices=%d)", len(list.Items))
 	}
 }
 
