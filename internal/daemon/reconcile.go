@@ -26,6 +26,13 @@ const (
 	// first pass.
 	unhealthyReconcileThreshold = 3
 
+	// restartRepairLimit is how many restarts the daemon will try on an
+	// enrolled node before reinstalling it instead. Restarting is the cheap
+	// repair, not the only one: a restart that fails, or that runs but leaves
+	// thunderd unhealthy anyway, must not become a loop that never reaches the
+	// repair that would have worked.
+	restartRepairLimit = 2
+
 	// transitionalReconcileThreshold bounds how long thunderd may sit in a
 	// systemd transition before it counts as broken. Restarting and stopping
 	// are states thunderd passes through on its own — including immediately
@@ -65,6 +72,14 @@ type reconciler struct {
 	transitional   int
 	passes         int
 	libthunderPath string
+
+	// loggedStatus is the last thunderd status that was logged. Statuses are
+	// logged when they change rather than every pass.
+	loggedStatus statusKey
+
+	// restarts counts the restarts attempted since thunderd was last healthy.
+	// See restartRepairLimit.
+	restarts int
 }
 
 // loop reconciles until the context is cancelled. It returns only on
@@ -139,30 +154,22 @@ func (r *reconciler) reconcile(ctx context.Context) error {
 	return r.ensurePlugin(ctx, cfg)
 }
 
-// ensureEnrolled re-runs enrollment when thunderd is not healthy on the host.
+// ensureEnrolled brings thunderd back to healthy on the host when it is not.
 // An unreadable status counts as unhealthy: `thunder status` exiting 127 is
 // what an uninstalled thunderd looks like, and that is precisely the case the
 // daemon has to recover from.
 func (r *reconciler) ensureEnrolled(ctx context.Context, cfg Config) error {
 	status, statusErr := getThunderStatus(ctx, r.runner)
-	healthy := statusErr == nil && status.Healthy
-	if statusErr != nil {
-		log.Printf("thunder status unavailable on node %s: %v", cfg.Node, statusErr)
-	} else {
-		prefix := "periodic"
-		if !r.everHealthy && r.unhealthy == 0 {
-			prefix = "initial"
-		}
-		logThunderStatus(prefix, status)
-	}
+	r.logStatus(cfg, status, statusErr)
 
-	if healthy {
+	if statusErr == nil && status.nodeHealthy() {
 		if r.unhealthy > 0 || r.transitional > 0 {
-			log.Printf("thunder recovered on node %s after %d unhealthy and %d transitional check(s)",
+			log.Printf("thunderd recovered on node %s after %d unhealthy and %d transitional check(s)",
 				cfg.Node, r.unhealthy, r.transitional)
 		}
 		r.unhealthy = 0
 		r.transitional = 0
+		r.restarts = 0
 		r.everHealthy = true
 		return nil
 	}
@@ -172,35 +179,99 @@ func (r *reconciler) ensureEnrolled(ctx context.Context, cfg Config) error {
 	// never ends is as broken as a service that failed.
 	if statusErr == nil && isTransitional(status) && r.transitional < transitionalReconcileThreshold {
 		r.transitional++
-		log.Printf("thunder is %s on node %s (%s); waiting for it to settle (%d/%d)",
+		log.Printf("thunderd is %s on node %s (%s); waiting for it to settle (%d/%d)",
 			status.Service.Active, cfg.Node, status.Service.SubState, r.transitional, transitionalReconcileThreshold)
 		return nil
 	}
 
 	r.unhealthy++
 	// A node that has been healthy before is given a grace window, so a
-	// service restart is not mistaken for a node that needs reinstalling.
+	// service restart is not mistaken for a node that needs repairing.
 	threshold := 1
 	if r.everHealthy {
 		threshold = unhealthyReconcileThreshold
 	}
 	if r.unhealthy < threshold {
-		log.Printf("thunder unhealthy on node %s (%d/%d checks); waiting before re-enrolling",
+		log.Printf("thunderd unhealthy on node %s (%d/%d checks); waiting before repairing it",
 			cfg.Node, r.unhealthy, threshold)
 		return nil
 	}
 
-	log.Printf("thunder unhealthy on node %s after %d check(s); enrolling", cfg.Node, r.unhealthy)
+	// A node whose CLI answered and whose auth token is already on disk needs
+	// thunderd started, not installed: reinstalling downloads the CLI again
+	// and spends a fresh single-use enrollment token on a node Thunder has
+	// already enrolled.
+	if statusErr == nil && status.enrolled() && r.restarts < restartRepairLimit {
+		r.restarts++
+		log.Printf("thunderd is installed and enrolled on node %s but not healthy after %d check(s); restarting it (attempt %d/%d)",
+			cfg.Node, r.unhealthy, r.restarts, restartRepairLimit)
+		if err := r.restart(ctx, cfg); err != nil {
+			log.Printf("could not restart thunderd on node %s, reinstalling it instead: %v", cfg.Node, err)
+		} else {
+			// Health is confirmed by the next pass rather than assumed here.
+			// A restart that ran but did not fix the node is why the attempts
+			// are counted rather than only the failures.
+			r.unhealthy = 0
+			r.transitional = 0
+			return nil
+		}
+	}
+
+	log.Printf("thunderd unhealthy on node %s after %d check(s); enrolling", cfg.Node, r.unhealthy)
 	if err := r.enroll(ctx, cfg); err != nil {
 		return err
 	}
-	// Health is confirmed by the next pass rather than assumed here.
+	// A reinstall re-establishes what the cheap repair could not, so restarts
+	// are worth trying again on the next outage.
+	r.restarts = 0
 	r.unhealthy = 0
 	r.transitional = 0
 	return nil
 }
 
-// isTransitional reports whether thunderd is mid-transition.
+// logStatus logs a thunderd status when it differs from the one logged last,
+// so a steady node reports its state once instead of every pass. What changed
+// is decided on the status fields, not on the line they produce.
+func (r *reconciler) logStatus(cfg Config, status thunderStatus, statusErr error) {
+	key := status.key()
+	if statusErr != nil {
+		key = unreadableStatusKey(statusErr)
+	}
+	if key == r.loggedStatus {
+		return
+	}
+	r.loggedStatus = key
+
+	if statusErr != nil {
+		log.Printf("thunderd status unavailable on node %s: %v", cfg.Node, statusErr)
+		return
+	}
+	logThunderStatus(status)
+}
+
+// restart brings thunderd back up with the credentials the node already has.
+// It is the repair for a node that is enrolled but not running: no download,
+// and no enrollment token, because the auth token thunderd saved when it
+// enrolled is still the one Thunder issued this node.
+func (r *reconciler) restart(ctx context.Context, cfg Config) error {
+	command := strings.Join([]string{
+		thunderdTransientEnv, "thunder", "up",
+		"--ip", shellQuote(cfg.AdvertisedIP),
+		"--zone", shellQuote(cfg.Zone),
+		"--node-name", shellQuote(cfg.Node),
+	}, " ")
+	if err := r.runner.RunShell(ctx, "thunder up", command); err != nil {
+		return fmt.Errorf("run thunder up: %w", err)
+	}
+	log.Printf("thunderd restarted on node %s", cfg.Node)
+	return nil
+}
+
+// isTransitional reports whether thunderd is mid-transition. This does read a
+// systemd state string, but it never calls a node healthy: it only buys a
+// service that is visibly on its way up or down some time before the daemon
+// repairs it. A state string this does not recognise costs that wait and
+// nothing else — the node is repaired sooner, not left broken.
 func isTransitional(status thunderStatus) bool {
 	_, ok := transitionalServiceStates[strings.TrimSpace(status.Service.Active)]
 	return ok
@@ -232,7 +303,7 @@ func (r *reconciler) enroll(ctx context.Context, cfg Config) error {
 	if err != nil {
 		return err
 	}
-	if err := r.runner.RunShell(ctx, command); err != nil {
+	if err := r.runner.RunShell(ctx, "thunder installer", command); err != nil {
 		return fmt.Errorf("run thunder node setup: %w", err)
 	}
 

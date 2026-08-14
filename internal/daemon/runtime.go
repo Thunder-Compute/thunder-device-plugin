@@ -21,8 +21,12 @@ func Run(ctx context.Context, cfg Config) error {
 }
 
 func run(ctx context.Context, cfg Config, runner commandRunner, nodes nodeInfoReader) error {
-	log.Printf("starting thunder daemon %s (%s): node=%s",
-		version.Get(), version.Revision(), cfg.Node)
+	log.Printf("starting thunder daemon %s: node=%s", buildDescription(), cfg.Node)
+
+	// thunderd's own logs are republished as this pod's logs, so whoever is
+	// debugging a node reads them with kubectl rather than over SSH. It runs
+	// alongside the reconcile loop and stops with it.
+	go followThunderdLogs(ctx, runner, cfg.ThunderdLogUnit)
 
 	// The installer URL reaches the SDK, so the commands it builds — node
 	// enrollment and the guest client install — fetch from the same artifact
@@ -42,6 +46,16 @@ func run(ctx context.Context, cfg Config, runner commandRunner, nodes nodeInfoRe
 		startPlugin: startDRAPlugin,
 	}
 	return reconciler.loop(ctx, ThunderReconcileInterval, ThunderReconcileMaxBackoff)
+}
+
+// buildDescription names this build once, without repeating the revision when
+// that is all the version is.
+func buildDescription() string {
+	build, revision := version.Get(), version.Revision()
+	if strings.HasPrefix(revision, build) || strings.HasPrefix(build, revision) {
+		return build
+	}
+	return build + " (" + revision + ")"
 }
 
 func startDRAPlugin(ctx context.Context, cfg Config, thunderClient *thunder.Client, zoneID string) error {
