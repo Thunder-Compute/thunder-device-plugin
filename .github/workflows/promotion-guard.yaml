@@ -1,0 +1,39 @@
+# `main` only ever moves by promoting `next`. GitHub rulesets cannot express a
+# source branch restriction, so this check does it and is required on the
+# default branch: a pull request into main from anything but next fails here.
+name: promotion-guard
+
+on:
+  pull_request:
+    branches: [main]
+    # `edited` catches a base branch retargeted onto main after the pull
+    # request was opened against something else.
+    types: [opened, reopened, synchronize, edited]
+
+concurrency:
+  group: promotion-guard-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  source-branch:
+    name: promoted from next
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require next
+        env:
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+        run: |
+          set -euo pipefail
+          # A fork may carry its own `next`, so the branch has to be this
+          # repository's.
+          if [[ "${HEAD_REPO}" != "${GITHUB_REPOSITORY}" || "${HEAD_REF}" != "next" ]]; then
+            echo "main only accepts promotions of ${GITHUB_REPOSITORY}@next," \
+                 "got ${HEAD_REPO}@${HEAD_REF}."
+            echo "Merge this work into next first, then open next -> main."
+            exit 1
+          fi
+          echo "promoting ${HEAD_REPO}@${HEAD_REF} into main"
