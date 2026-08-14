@@ -28,6 +28,9 @@ release they were promoted to. See [docs/RELEASING.md](docs/RELEASING.md).
   prefix, so a node problem is readable with `kubectl logs`. `THUNDERD_LOG_UNIT`
   names the unit, or turns the stream off.
 - `image.digest` for both components, pinning past the tag when set.
+- `thunder.portRange`, declaring the host data ports thunderd binds on each
+  enrolled node. It defaults to the installer's regular `32000-32199` range and
+  can be set to a cluster-specific range such as `61000-61199`.
 
 ### Changed
 

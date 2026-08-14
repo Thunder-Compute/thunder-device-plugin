@@ -13,6 +13,7 @@ const (
 	EnvAdvertisedIP        = "ADVERTISED_IP"
 	EnvMinNVDriverVersion  = "MIN_DRIVER_VERSION"
 	EnvThunderAPIURL       = "THUNDER_API_URL"
+	EnvThunderPortRange    = "THUNDER_PORT_RANGE"
 	EnvThunderAPIToken     = "THUNDER_API_TOKEN"
 	EnvHostRoot            = "HOST_ROOT"
 	EnvLibCUDAPath         = "LIBCUDA_PATH"
@@ -69,8 +70,14 @@ type Config struct {
 	// AdvertisedIP is the address Thunder clients use to reach this node.
 	// When empty it is resolved from AdvertisedIPLabel and then from the
 	// node's own IP. See resolveNodeAttributes.
-	AdvertisedIP        string
-	MinDriverVersion    string
+	AdvertisedIP     string
+	MinDriverVersion string
+	// PortRange is the host data-port range, "start-end", that thunderd binds
+	// for CUDA traffic: a data and a control port per attached session. It is
+	// passed to the installer at enrollment. Empty leaves the installer's own
+	// default in place. Operators should choose a range that clears both the
+	// cluster's NodePort range and the kernel's ephemeral range. (by claude)
+	PortRange           string
 	ThunderAPIURL       string
 	ThunderAPIToken     string
 	HostRoot            string
@@ -126,12 +133,17 @@ func configFromLookup(lookup func(string) (string, bool)) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	portRange, err := optionalPortRangeEnv(lookup, EnvThunderPortRange)
+	if err != nil {
+		return Config{}, err
+	}
 
 	return Config{
 		Node:                node,
 		Zone:                zone,
 		AdvertisedIP:        advertisedIP,
 		MinDriverVersion:    minVersion,
+		PortRange:           portRange,
 		ThunderAPIURL:       optionalEnv(lookup, EnvThunderAPIURL, ""),
 		ThunderAPIToken:     apiToken,
 		HostRoot:            optionalEnv(lookup, EnvHostRoot, DefaultHostRoot),
@@ -183,4 +195,31 @@ func optionalBoolEnv(lookup func(string) (string, bool), key string, fallback bo
 		return false, fmt.Errorf("%s must be a boolean: %w", key, err)
 	}
 	return parsed, nil
+}
+
+// optionalPortRangeEnv reads a "start-end" port range. A malformed one fails
+// here, at startup, rather than reaching an enrollment that would leave the
+// node bound to ports nobody chose. (by claude)
+func optionalPortRangeEnv(lookup func(string) (string, bool), key string) (string, error) {
+	value := optionalEnv(lookup, key, "")
+	if value == "" {
+		return "", nil
+	}
+	malformed := fmt.Errorf("%s must be a port range like 32000-32199, got %q", key, value)
+	rawStart, rawEnd, found := strings.Cut(value, "-")
+	if !found {
+		return "", malformed
+	}
+	start, err := strconv.Atoi(rawStart)
+	if err != nil {
+		return "", malformed
+	}
+	end, err := strconv.Atoi(rawEnd)
+	if err != nil {
+		return "", malformed
+	}
+	if start < 1 || end > 65535 || start > end {
+		return "", fmt.Errorf("%s must be a port range within 1-65535 with start <= end, got %q", key, value)
+	}
+	return value, nil
 }
