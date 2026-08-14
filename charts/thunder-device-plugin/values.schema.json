@@ -42,7 +42,7 @@
         },
         "tag": {
           "type": "string",
-          "description": "Image tag. Empty falls back to the chart appVersion."
+          "description": "Image tag. CI records the published source-commit tag here before release."
         },
         "pullPolicy": {
           "enum": [

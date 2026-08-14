@@ -1,8 +1,5 @@
-# Promotion, not a build. Every commit on `main` has images tagged by its full
-# Git SHA. A release promotes the selected `main` commit's image manifests to
-# the release version, so what is installed is that exact artifact.
-#
-# Run this from `main`, after its image publishing workflow has completed.
+# A release packages the chart composition already merged through `next` and
+# `main`. The chart values explicitly select the CI-published image tags.
 name: release
 
 on:
@@ -20,16 +17,14 @@ concurrency:
 permissions:
   contents: write
   packages: write
-  id-token: write
 
 env:
   HELM_VERSION: v4.0.1
-  REGISTRY: ghcr.io/thunder-compute/thunder-device-plugin
   CHART_REGISTRY: oci://ghcr.io/thunder-compute/charts
 
 jobs:
-  promote:
-    name: promote main
+  release:
+    name: publish release
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -37,8 +32,6 @@ jobs:
           ref: main
           fetch-depth: 0
 
-      # Releases must be run from main. The checked-out commit already has
-      # images published by publish-images.yaml under its full Git SHA.
       - id: version
         env:
           VERSION: ${{ inputs.version }}
@@ -58,24 +51,8 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Promote the main images
-        env:
-          VERSION: ${{ steps.version.outputs.version }}
-          SOURCE_SHA: ${{ steps.version.outputs.source_sha }}
-        run: |
-          set -euo pipefail
-          for image in daemon operator; do
-            docker buildx imagetools inspect "${REGISTRY}/${image}:${SOURCE_SHA}" >/dev/null
-            docker buildx imagetools create \
-              --tag "${REGISTRY}/${image}:${VERSION}" \
-              "${REGISTRY}/${image}:${SOURCE_SHA}"
-          done
-
-      - name: Verify the release is the main commit
-        env:
-          SOURCE_SHA: ${{ steps.version.outputs.source_sha }}
-          VERSION: ${{ steps.version.outputs.version }}
-        run: make verify-promotion SOURCE_TAG="${SOURCE_SHA}" RELEASE_VERSION="${VERSION}"
+      - name: Verify chart-selected images
+        run: make verify-chart-images
 
       - uses: azure/setup-helm@v4
         with:
@@ -97,8 +74,8 @@ jobs:
         run: |
           set -euo pipefail
           {
-            echo "Promoted from main commit \`${SOURCE_SHA}\`."
-            echo "Identical image digests: the release is that main image promoted, not a rebuild."
+            echo "Published from main commit \`${SOURCE_SHA}\`."
+            echo "The chart values pin the CI-published component image tags verified before packaging."
             echo
             echo '```bash'
             echo "helm install thunder-device-plugin \\"

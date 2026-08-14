@@ -4,14 +4,14 @@ updates:
     directory: /
     schedule:
       interval: weekly
-    target-branch: main
+    target-branch: next
     open-pull-requests-limit: 5
 
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
-    target-branch: main
+    target-branch: next
 
   - package-ecosystem: docker
     directories:
@@ -19,4 +19,4 @@ updates:
       - /containers/operator
     schedule:
       interval: weekly
-    target-branch: main
+    target-branch: next

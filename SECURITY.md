@@ -14,8 +14,8 @@ Fixes go to the most recent release. There are no long-term support branches.
 
 ## Verifying what you install
 
-Images and charts are signed with [cosign](https://docs.sigstore.dev/) from
-GitHub Actions, keyless:
+Images are signed with [cosign](https://docs.sigstore.dev/) from GitHub Actions,
+keyless:
 
 ```bash
 cosign verify ghcr.io/thunder-compute/thunder-device-plugin/operator:<version> \

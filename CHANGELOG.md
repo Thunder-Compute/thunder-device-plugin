@@ -11,10 +11,10 @@ release they were promoted to. See [docs/RELEASING.md](docs/RELEASING.md).
 
 ### Changed
 
-- Images are published to `ghcr.io/thunder-compute` and the chart's image tags
-  default to `appVersion`, so a chart version pins exactly what runs.
-- Images and chart are signed with cosign and published with SBOM and
-  provenance attestations.
+- Images are published to the canonical nested repositories under
+  `ghcr.io/thunder-compute/thunder-device-plugin`.
+- CI records the published source-commit image tag in `values.yaml`, so the
+  chart commit pins exactly what runs.
 
 ### Added
 

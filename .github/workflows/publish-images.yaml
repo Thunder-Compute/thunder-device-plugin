@@ -1,11 +1,13 @@
-# Every commit merged into `main` publishes the daemon and operator images
-# under its immutable full Git commit SHA. Releases promote those exact image
-# manifests to a human-readable version; they never rebuild them.
+# CI owns image publication. A merge to `next` builds images tagged with the
+# source commit SHA, then opens a visible PR recording those tags in the chart.
+# The values PR must be merged before `next` is promoted to `main`.
 name: publish-images
 
 on:
   push:
-    branches: [main]
+    branches: [next]
+    paths-ignore:
+      - charts/thunder-device-plugin/values.yaml
   workflow_dispatch:
 
 concurrency:
@@ -13,7 +15,7 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
-  contents: read
+  contents: write
   packages: write
   id-token: write
 
@@ -22,15 +24,18 @@ env:
 
 jobs:
   publish:
-    name: publish images
+    name: publish images and propose chart update
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: next
+          fetch-depth: 0
 
-      - name: Require main
+      - name: Require next
         run: |
-          [[ "${GITHUB_REF}" == "refs/heads/main" ]] || {
-            echo "image publishing must run from main, got ${GITHUB_REF}"
+          [[ "${GITHUB_REF}" == "refs/heads/next" ]] || {
+            echo "image publishing must run from next, got ${GITHUB_REF}"
             exit 1
           }
 
@@ -76,3 +81,34 @@ jobs:
             "${REGISTRY}/daemon@${{ steps.daemon.outputs.digest }}"
           cosign sign --yes \
             "${REGISTRY}/operator@${{ steps.operator.outputs.digest }}"
+
+      - name: Update chart image tags
+        run: hack/update-image-tags.sh "${GITHUB_SHA}"
+
+      - name: Open chart values pull request
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          branch="automation/image-tags-${GITHUB_SHA}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "${branch}"
+          git add charts/thunder-device-plugin/values.yaml
+          git commit -m "chore: pin images for ${GITHUB_SHA}"
+
+          if git ls-remote --exit-code --heads origin "${branch}" >/dev/null 2>&1; then
+            echo "${branch} already exists; leaving its pull request unchanged"
+          else
+            git push origin "${branch}"
+          fi
+
+          existing_prs="$(gh pr list --repo "${GITHUB_REPOSITORY}" --head "${branch}" --base next --json number --jq 'length')"
+          if [[ "${existing_prs}" == "0" ]]; then
+            gh pr create \
+              --repo "${GITHUB_REPOSITORY}" \
+              --base next \
+              --head "${branch}" \
+              --title "chore: pin images for ${GITHUB_SHA}" \
+              --body "CI published daemon and operator images for ${GITHUB_SHA}. Merge this PR before promoting next to main."
+          fi

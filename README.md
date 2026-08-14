@@ -510,16 +510,12 @@ Details in [`hack/README.md`](hack/README.md).
 
 ## Releases
 
-Every commit merged into `main` builds and publishes the daemon and operator
-images under its full Git commit SHA. A release is a **promotion**, not a
-rebuild: the release workflow retags the selected `main` commit's image
-manifests and packages the chart with the release version.
+CI publishes and signs images for changes merged into `next`, then opens a
+reviewable PR that records those source-commit tags in `values.yaml`. The
+release workflow verifies those exact image references and packages the chart
+without rebuilding or retagging images.
 
-Images and charts are signed with cosign and carry SBOM and provenance
-attestations — see [SECURITY.md](SECURITY.md) to verify them.
-
-The chart leaves image tags empty so packaged `appVersion` selects the matching
-release images. Contributors: see
+Contributors: see
 [CONTRIBUTING.md](CONTRIBUTING.md) and [docs/RELEASING.md](docs/RELEASING.md).
 
 ## Repository layout
