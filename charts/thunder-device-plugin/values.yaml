@@ -34,7 +34,7 @@ operator:
     # -- Repository for the operator image.
     repository: ghcr.io/thunder-compute/thunder-device-plugin/operator
     # -- Tag for the operator image. CI records the published source-commit tag here before release.
-    tag: ""
+    tag: "8a97fa2b16497c89aaceb7f3bfdb62b923e4c240"
     # -- Pull policy for the operator image. (Options: "Always", "IfNotPresent", "Never")
     pullPolicy: IfNotPresent
   # -- How often Thunder inventory is polled. New GPU models and capacity changes appear within this interval.
@@ -63,7 +63,7 @@ daemon:
     # -- Repository for the node daemon image.
     repository: ghcr.io/thunder-compute/thunder-device-plugin/daemon
     # -- Tag for the node daemon image. CI records the published source-commit tag here before release.
-    tag: ""
+    tag: "8a97fa2b16497c89aaceb7f3bfdb62b923e4c240"
     # -- Pull policy for the node daemon image. (Options: "Always", "IfNotPresent", "Never")
     pullPolicy: IfNotPresent
   # -- Annotations added to daemon pods.
