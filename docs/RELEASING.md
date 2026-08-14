@@ -1,84 +1,60 @@
 # Releasing
 
-A chart release is a **composition**, not an image build. Work is staged on
-`next` until it is ready, and `main` moves onto it. The daemon and operator are
-published independently with UTC timestamp tags; `values.yaml` records the
-exact builds composed by the chart.
+Image publication is owned by GitHub Actions. Developers do not need GHCR
+push credentials and do not update release image tags by hand.
 
-```
-next  ──●──●──●──●─────────  candidates: 0.2.0-rc.1, -rc.2, -rc.3 …
-         └── main ──────●     fast-forwarded onto a ready candidate, tagged v0.2.0
-```
+## The workflow
 
-## The two branches
+1. Open pull requests against `next`. CI runs static checks, unit tests, chart
+   rendering, and the kind cluster test.
 
-| Branch | What it means |
-| --- | --- |
-| `next` | The next release, staged. Every commit publishes a release candidate. |
-| `main` | The live release. Only ever fast-forwarded onto a candidate. |
+2. Merge the code change into `next`. `publish-images.yaml` builds and signs
+   both component images using the GitHub Actions package token:
 
-Every pull request targets `next`. Nothing is ever pushed to `main` directly —
-not a hotfix, not a docs typo. Because `main` only fast-forwards, the two
-branches can never diverge, so there is no cherry-picking and no merge to get
-wrong: what is released is the identical commit that was staged.
-
-## Versions
-
-`charts/thunder-device-plugin/Chart.yaml` carries the version being **cooked**,
-not the last one released. Bump it on `next` immediately after a promotion.
-
-Candidates are numbered by distance from `main`, so the count restarts at each
-promotion. `hack/release-version.sh` is the single source of that arithmetic;
-CI never computes a version any other way.
-
-```bash
-make release-version     # 0.2.0-rc.3
-```
-
-The chart records the production `operator.image.tag` and `daemon.image.tag`
-directly in `values.yaml`. Together with `Chart.yaml`, those values are the
-release manifest for the exact component builds a chart installs.
-
-## The loop
-
-1. **Publish component builds as needed.** Use one UTC timestamp for both
-   images when both components change. Test those exact images, then record
-   their tags in `values.yaml`. A chart-only change reuses the existing tags.
-
-2. **Merge to `next`.** CI checks the code and chart, verifies that the images
-   selected by `values.yaml` exist, and cuts source prerelease `v0.2.0-rc.N`.
-   Validate the chart from that exact commit with those exact images.
-
-3. **Fast-forward `main`** once the candidate is ready:
-
-   ```bash
-   git push origin v0.2.0-rc.3^{commit}:main
+   ```text
+   ghcr.io/thunder-compute/thunder-device-plugin/daemon:<source-commit-sha>
+   ghcr.io/thunder-compute/thunder-device-plugin/operator:<source-commit-sha>
    ```
 
-   This fails if it is not a fast-forward, which is exactly the protection
-   wanted.
+3. The workflow opens a bot PR that records that same source-commit SHA in
+   both image tags in `charts/thunder-device-plugin/values.yaml`. Review and
+   merge this PR into `next`. The chart commit now explicitly selects the
+   images CI published.
 
-4. **Release.** Run the `release` workflow from `main` with the candidate
-   version as input. It verifies the timestamped images still exist, publishes
-   the version from `Chart.yaml`, and cuts GitHub Release `v0.2.0`. It never
-   builds or re-tags a component image.
+4. Test the chart from the resulting `next` commit. Then merge `next` into
+   `main`. Do not promote `main` before the image-values PR has merged.
 
-5. **Bump `Chart.yaml`** on `next` to the next version.
+5. Run the `release` workflow from `main`, supplying a semantic version such
+   as `0.2.0`. The workflow verifies the images selected by `values.yaml`,
+   packages the chart, and publishes the release. It does not rebuild or
+   retag a different image.
 
-The chart package, its source tag, and the two image tags in `values.yaml`
-together identify the release. Published timestamp image tags are immutable
-and must remain available while any chart release references them.
+Thundernetes renders this chart directly from its pinned Git commit, so the
+explicit values update is required. Packaged chart `appVersion` metadata alone
+is not sufficient for that deployment path.
 
-## Hotfixes
+## Image references
 
-Land on `next`, take a candidate, validate it, then fast-forward. Shipping a
-fix straight to `main` skips the only evidence that it works.
+The image repositories are shared by CI, the chart, and the release workflow:
+
+```text
+ghcr.io/thunder-compute/thunder-device-plugin/daemon:<tag>
+ghcr.io/thunder-compute/thunder-device-plugin/operator:<tag>
+```
+
+The source-commit tags are immutable build identifiers. Release chart values
+continue to point at those exact tags.
 
 ## Checking a release by hand
 
 ```bash
 make verify-chart-images
-
 docker buildx imagetools inspect \
   ghcr.io/thunder-compute/thunder-device-plugin/operator:<tag>
 ```
+
+## Hotfixes
+
+Open the hotfix PR against `next`. After merging, wait for the CI image-values
+PR, merge it, and then promote the combined result to `main` through the normal
+workflow.
