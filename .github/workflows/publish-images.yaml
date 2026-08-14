@@ -95,6 +95,10 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git checkout -b "${branch}"
           git add charts/thunder-device-plugin/values.yaml
+          if git diff --cached --quiet; then
+            echo "chart already records ${GITHUB_SHA}; no values PR needed"
+            exit 0
+          fi
           git commit -m "chore: pin images for ${GITHUB_SHA}"
 
           if git ls-remote --exit-code --heads origin "${branch}" >/dev/null 2>&1; then
