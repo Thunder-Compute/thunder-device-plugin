@@ -109,47 +109,6 @@ typos and wrong types fail at install time rather than silently doing nothing.
 | `thunder.artifactBaseURL` | string | `https://get.thundercompute.com` | Host the Thunder client artifacts are downloaded from. The daemon fetches `libthunder.so` from here and stages it into every container that claims a GPU. Point at a staging artifact host to run unreleased client builds. |
 | `thunder.installURL` | string | `""` | Installer the daemon reads the pinned libthunder.so digest out of. It is read, never executed. Empty derives it as `<artifactBaseURL>/install.sh`. |
 | `thunder.telemetryURL` | string | `https://telemetry.thundercompute.com:2096` | Telemetry collector written into each container's Thunder client config. |
-| `thunder.portRange` | string | `32000-32199` | Host data ports thunderd binds on every enrolled node, as `start-end`. Override this when the regular range overlaps your cluster's NodePort or ephemeral range. See [Host data ports](#host-data-ports) |
-
-#### Host data ports
-
-Every enrolled node runs thunderd, which binds a range of host ports for the
-CUDA traffic of attached GPUs: each session takes a data and a control port out
-of the range, so the range bounds how many sessions the node can serve.
-`thunder.portRange` declares that range, and the chart defaults it to the
-Thunder installer's regular `32000-32199`.
-
-The regular range may overlap a cluster's NodePort range or the kernel's
-ephemeral range. A node's port map has two regions a custom range should stay
-out of:
-
-- **`30000-32767`, the NodePort range.** This is `--service-node-port-range` on
-  the API server, and it is where Kubernetes hands out `NodePort` Services. An
-  overlap here is silent: with Cilium's eBPF kube-proxy replacement a NodePort
-  has no listening socket, so thunderd's `bind()` succeeds and reports nothing,
-  and Cilium then DNATs that port's traffic away before it is delivered to
-  thunderd's socket. Neither side logs a conflict; the traffic simply goes to
-  the wrong place.
-- **`32768-60999`, the ephemeral range.** This is `net.ipv4.ip_local_port_range`,
-  the ports the kernel assigns as source ports for outbound connections. Binding
-  data ports in here does not misroute anything, but it races the kernel: a port
-  the kernel has already handed to an outbound connection is not available to
-  thunderd when it goes to bind it.
-
-Set the value when your cluster has moved either range. For example, this uses
-a range above the usual NodePort and ephemeral ranges:
-
-```bash
-helm upgrade --install thunder-device-plugin charts/thunder-device-plugin \
-  --namespace thunder-system --set thunder.portRange=61000-61199
-```
-
-Setting it to `""` also passes nothing and leaves the range to the installer.
-
-The range is applied at enrollment, so an already-enrolled node keeps the range
-it was installed with. If you override it, open the selected range in the
-firewalls and security groups in front of your nodes before they enroll or
-re-enroll.
 
 ### Operator
 

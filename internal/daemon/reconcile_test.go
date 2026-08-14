@@ -407,55 +407,6 @@ func TestReconcileReenrollsPromptlyOnAFailedService(t *testing.T) {
 	}
 }
 
-// A declared host data-port range must reach the installer, and no declared
-// range must leave the command exactly as it was before the setting existed.
-// Both enrollments run against one reconciler so the rest of the command (API
-// URL, enrollment token) is identical and only the range can differ. (by claude)
-func TestEnrollPassesPortRangeToInstaller(t *testing.T) {
-	tests := []struct {
-		name      string
-		portRange string
-		wantEnv   string
-	}{
-		{name: "unset", portRange: ""},
-		{name: "declared", portRange: "32000-32199", wantEnv: " THUNDERD_PORT_RANGE='32000-32199'"},
-	}
-
-	runner := &scriptedRunner{}
-	reconciler, _ := newTestReconciler(t, runner)
-	commands := map[string]string{}
-
-	for i, test := range tests {
-		cfg := reconciler.cfg
-		cfg.Zone = "us-west-2a"
-		cfg.AdvertisedIP = "10.0.0.5"
-		cfg.PortRange = test.portRange
-
-		if err := reconciler.enroll(context.Background(), cfg); err != nil {
-			t.Fatalf("%s: enroll: %v", test.name, err)
-		}
-		if len(runner.shell) != i+1 {
-			t.Fatalf("%s: ran %d installer commands, want %d", test.name, len(runner.shell), i+1)
-		}
-		command := runner.shell[i]
-		commands[test.name] = command
-
-		if test.wantEnv == "" {
-			if strings.Contains(command, "THUNDERD_PORT_RANGE") {
-				t.Fatalf("%s: command sets THUNDERD_PORT_RANGE:\n%s", test.name, command)
-			}
-			continue
-		}
-		if !strings.Contains(command, test.wantEnv) {
-			t.Fatalf("%s: command does not carry %q:\n%s", test.name, test.wantEnv, command)
-		}
-	}
-
-	if stripped := strings.Replace(commands["declared"], " THUNDERD_PORT_RANGE='32000-32199'", "", 1); stripped != commands["unset"] {
-		t.Fatalf("an unset range changed the command beyond the range itself:\n%s\nwant\n%s", stripped, commands["unset"])
-	}
-}
-
 // The installer must be told to run thunderd as a transient unit, and a command
 // this cannot add that to must fail rather than quietly install a unit file.
 func TestWithTransientThunderd(t *testing.T) {

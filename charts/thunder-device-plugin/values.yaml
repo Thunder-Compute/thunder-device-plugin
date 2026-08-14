@@ -24,8 +24,6 @@ thunder:
   artifactBaseURL: "https://get.thundercompute.com"
   # -- Installer the daemon reads the pinned libthunder.so digest out of. It is read, never executed. Empty derives it as `<artifactBaseURL>/install.sh`, which is almost always what you want.
   installURL: ""
-  # -- Host data ports thunderd binds on every enrolled node, as `start-end`. Each attached GPU session takes a data and a control port out of this range, so it bounds how many sessions a node can serve. The default is the Thunder installer's regular range, 32000-32199. Set it explicitly when that overlaps your cluster's NodePort or kernel ephemeral range; the range is applied at enrollment, so an already-enrolled node keeps the range it was installed with. Empty also leaves the installer's default in place. (Example: "61000-61199")
-  portRange: "32000-32199"
 
 ## operator
 
