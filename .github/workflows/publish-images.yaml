@@ -47,7 +47,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - id: daemon
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: containers/daemon/Dockerfile
@@ -61,7 +61,7 @@ jobs:
           tags: ${{ env.REGISTRY }}/daemon:${{ github.sha }}
 
       - id: operator
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: containers/operator/Dockerfile
