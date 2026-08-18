@@ -31,7 +31,7 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - uses: azure/setup-helm@v4
+      - uses: azure/setup-helm@v5
         with:
           version: ${{ env.HELM_VERSION }}
       # Go build, vet and tests, then every chart rendered and asserted against
@@ -47,7 +47,7 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - uses: azure/setup-helm@v4
+      - uses: azure/setup-helm@v5
         with:
           version: ${{ env.HELM_VERSION }}
       - uses: helm/kind-action@v1
