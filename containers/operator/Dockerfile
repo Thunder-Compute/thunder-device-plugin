@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 
 # Build stage: compiled from source so images are reproducible from a git ref.
-FROM --platform=$BUILDPLATFORM golang:1.25-bookworm AS build
+FROM --platform=$BUILDPLATFORM golang:1.26-bookworm AS build
 
 ARG VERSION=dev
 ARG COMMIT=unknown
