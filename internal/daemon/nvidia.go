@@ -142,3 +142,88 @@ func resolveNodePath(hostRoot string, nodePath string) string {
 	}
 	return filepath.Join(hostRoot, strings.TrimPrefix(cleanNodePath, string(os.PathSeparator)))
 }
+
+const maxHostViewSymlinks = 40
+
+func pathInHostRoot(hostRoot string, path string) bool {
+	if path == hostRoot {
+		return true
+	}
+	return strings.HasPrefix(path, hostRoot+string(os.PathSeparator))
+}
+
+// statNodePath stats a node path through hostRoot. Absolute symlink targets
+// are re-rooted under hostRoot so they are followed in the host tree, not the
+// daemon's filesystem. os.Stat on /host/usr/local/cuda would otherwise resolve
+// a typical NVIDIA /usr/local/cuda -> /usr/local/cuda-X.Y link into the
+// container root and miss the host toolkit.
+func statNodePath(hostRoot string, nodePath string) (os.FileInfo, error) {
+	resolved, err := resolveHostViewPath(hostRoot, nodePath)
+	if err != nil {
+		return nil, err
+	}
+	return os.Lstat(resolved)
+}
+
+func resolveHostViewPath(hostRoot string, nodePath string) (string, error) {
+	cleanNodePath := filepath.Clean(nodePath)
+	if hostRoot == "" || hostRoot == "/" || !filepath.IsAbs(cleanNodePath) {
+		return cleanNodePath, nil
+	}
+	hostRoot = filepath.Clean(hostRoot)
+
+	components := strings.Split(strings.TrimPrefix(cleanNodePath, string(os.PathSeparator)), string(os.PathSeparator))
+	current := hostRoot
+	linksFollowed := 0
+	for i := 0; i < len(components); i++ {
+		component := components[i]
+		if component == "" || component == "." {
+			continue
+		}
+		if component == ".." {
+			if current != hostRoot {
+				parent := filepath.Dir(current)
+				if pathInHostRoot(hostRoot, parent) {
+					current = parent
+				} else {
+					current = hostRoot
+				}
+			}
+			continue
+		}
+
+		next := filepath.Join(current, component)
+		info, err := os.Lstat(next)
+		if err != nil {
+			return "", err
+		}
+		if info.Mode()&os.ModeSymlink == 0 {
+			current = next
+			continue
+		}
+
+		linksFollowed++
+		if linksFollowed > maxHostViewSymlinks {
+			return "", fmt.Errorf("too many levels of symbolic links at %s", next)
+		}
+		target, err := os.Readlink(next)
+		if err != nil {
+			return "", err
+		}
+		target = filepath.Clean(target)
+		var rest []string
+		if filepath.IsAbs(target) {
+			current = hostRoot
+			rest = strings.Split(strings.TrimPrefix(target, string(os.PathSeparator)), string(os.PathSeparator))
+		} else {
+			current = filepath.Dir(next)
+			if !pathInHostRoot(hostRoot, current) {
+				current = hostRoot
+			}
+			rest = strings.Split(target, string(os.PathSeparator))
+		}
+		components = append(rest, components[i+1:]...)
+		i = -1
+	}
+	return current, nil
+}

@@ -712,19 +712,20 @@ func (s *FileCDIDeviceStore) containerEnv(qualifiedName string, allocation Alloc
 	if profile != hostartifacts.ProfileNone {
 		pathDirs = append(pathDirs, filepath.Dir(s.nvidiaSMIPath()))
 		libraryDirs = append(libraryDirs, filepath.Dir(s.libCUDAPath()), filepath.Dir(s.libNVMLPath()))
+		if profile == hostartifacts.ProfileFull {
+			pathDirs = append(pathDirs, filepath.Join(s.toolkitPath(), "bin"))
+			libraryDirs = append(libraryDirs, filepath.Join(s.toolkitPath(), "lib64"))
+		}
+		pathDirs = append(pathDirs,
+			"/usr/local/sbin",
+			"/usr/local/bin",
+			"/usr/sbin",
+			"/usr/bin",
+			"/sbin",
+			"/bin",
+		)
 	}
-	if profile == hostartifacts.ProfileFull {
-		pathDirs = append(pathDirs, filepath.Join(s.toolkitPath(), "bin"))
-		libraryDirs = append(libraryDirs, filepath.Join(s.toolkitPath(), "lib64"))
-	}
-	pathDirs = uniqueNonEmpty(append(pathDirs,
-		"/usr/local/sbin",
-		"/usr/local/bin",
-		"/usr/sbin",
-		"/usr/bin",
-		"/sbin",
-		"/bin",
-	))
+	pathDirs = uniqueNonEmpty(pathDirs)
 	libraryDirs = uniqueNonEmpty(libraryDirs)
 	if len(pathDirs) > 0 {
 		env = append(env, "PATH="+strings.Join(pathDirs, ":"))

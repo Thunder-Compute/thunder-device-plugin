@@ -40,7 +40,7 @@ func (s *FileCDIDeviceStore) validateMounts(profile hostartifacts.Profile) error
 	}
 	for _, nodePath := range paths {
 		resolved := resolveNodePath(s.HostRoot, nodePath)
-		info, err := os.Stat(resolved)
+		info, err := statNodePath(s.HostRoot, nodePath)
 		if err != nil {
 			if os.IsNotExist(err) {
 				return fileNotFoundError(nodePath, resolved)

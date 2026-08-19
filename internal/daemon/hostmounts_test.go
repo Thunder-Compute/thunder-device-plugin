@@ -35,8 +35,12 @@ func TestFileCDIDeviceStoreMountProfiles(t *testing.T) {
 			}
 			env := store.containerEnv("thundercompute.com/gpu=test", Allocation{HostArtifactProfile: test.profile}, "token")
 			joined := strings.Join(env, "\n")
-			if test.profile == hostartifacts.ProfileNone && strings.Contains(joined, "LD_LIBRARY_PATH=") {
-				t.Fatalf("none profile contains host library path: %s", joined)
+			if test.profile == hostartifacts.ProfileNone {
+				for _, entry := range env {
+					if strings.HasPrefix(entry, "PATH=") || strings.HasPrefix(entry, "LD_LIBRARY_PATH=") {
+						t.Fatalf("none profile overwrites image environment: %s", joined)
+					}
+				}
 			}
 			if test.profile == hostartifacts.ProfileFull && (!strings.Contains(joined, "/opt/toolkit/bin") || !strings.Contains(joined, "/opt/toolkit/lib64")) {
 				t.Fatalf("full profile omits toolkit environment: %s", joined)
@@ -81,5 +85,39 @@ func TestFileCDIDeviceStoreRejectsMissingToolkitBeforeWritingState(t *testing.T)
 	}
 	if _, err := store.Create(context.Background(), Allocation{ClaimUID: uid, HostArtifactProfile: hostartifacts.ProfileFull}, "token"); err == nil || !strings.Contains(err.Error(), "not a directory") {
 		t.Fatalf("Create with toolkit file error = %v", err)
+	}
+}
+
+func TestFileCDIDeviceStoreAcceptsAbsoluteToolkitSymlink(t *testing.T) {
+	hostRoot := t.TempDir()
+	store := NewFileCDIDeviceStore(t.TempDir())
+	store.HostRoot = hostRoot
+	store.LibCUDAPath = "/driver/lib/libcuda.so.1"
+	store.LibNVMLPath = "/driver/lib/libnvidia-ml.so.1"
+	store.NVSMIPath = "/driver/bin/nvidia-smi"
+	store.ToolkitPath = "/usr/local/cuda"
+	store.ClientInstallCommand = "install"
+	for _, path := range []string{store.LibCUDAPath, store.LibNVMLPath, store.NVSMIPath} {
+		resolved := resolveNodePath(hostRoot, path)
+		if err := os.MkdirAll(filepath.Dir(resolved), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(resolved, []byte("fixture"), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	toolkitDir := resolveNodePath(hostRoot, "/usr/local/cuda-12.4")
+	if err := os.MkdirAll(toolkitDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("/usr/local/cuda-12.4", resolveNodePath(hostRoot, store.ToolkitPath)); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := store.Create(context.Background(), Allocation{
+		ClaimUID:            types.UID("11111111-1111-1111-1111-111111111111"),
+		HostArtifactProfile: hostartifacts.ProfileFull,
+	}, "token"); err != nil {
+		t.Fatalf("Create with absolute toolkit symlink: %v", err)
 	}
 }
