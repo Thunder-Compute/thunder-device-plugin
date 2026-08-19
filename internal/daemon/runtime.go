@@ -9,6 +9,7 @@ import (
 
 	thunder "github.com/Thunder-Compute/thunder-sdk"
 
+	"github.com/Thunder-Compute/thunder-device-plugin/internal/operator"
 	"github.com/Thunder-Compute/thunder-device-plugin/internal/version"
 
 	"k8s.io/client-go/dynamic"
@@ -102,6 +103,12 @@ func startDRAPlugin(ctx context.Context, cfg Config, thunderClient *thunder.Clie
 	cdiStore.CABundlePath = cfg.CABundlePath
 	log.Printf("staged CDI hook: path=%s cacheDir=%s", hookPath, cfg.KubeletPluginDir)
 
+	capacityOperator := operator.New(operator.Config{
+		DriverName:   cfg.DRADriverName,
+		NamePrefix:   operator.DefaultNamePrefix,
+		ZoneLabelKey: cfg.ZoneLabel,
+	}, kube, nil, thunderClient, nil)
+
 	driver := &Driver{
 		DriverName:                 cfg.DRADriverName,
 		NodeName:                   cfg.Node,
@@ -111,9 +118,10 @@ func startDRAPlugin(ctx context.Context, cfg Config, thunderClient *thunder.Clie
 			Client: thunderClient,
 			ZoneID: zoneID,
 		},
-		Clients: NewKubernetesThunderClientStore(dynamicClient, cfg.ThunderClientNS),
-		CDI:     cdiStore,
-		Guest:   NewKubernetesGuestConfigStore(kube),
+		Clients:  NewKubernetesThunderClientStore(dynamicClient, cfg.ThunderClientNS),
+		CDI:      cdiStore,
+		Guest:    NewKubernetesGuestConfigStore(kube),
+		Capacity: OperatorCapacityRefresher{Operator: capacityOperator},
 	}
 	_, err = StartNodePlugin(ctx, driver, kube, PluginConfig{
 		DriverName:       cfg.DRADriverName,
