@@ -44,6 +44,8 @@ spec:
               value: {{ .Values.operator.orphanGracePeriod | quote }}
             - name: EXTENDED_RESOURCE_PREFIX
               value: {{ .Values.operator.extendedResourcePrefix | quote }}
+            - name: HOST_ARTIFACT_DEFAULT_PROFILE
+              value: {{ .Values.hostArtifacts.defaultProfile | quote }}
             - name: THUNDER_API_URL
               value: {{ .Values.thunder.apiURL | quote }}
             - name: THUNDER_API_TOKEN

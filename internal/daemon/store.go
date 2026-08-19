@@ -20,6 +20,7 @@ import (
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 
+	"github.com/Thunder-Compute/thunder-device-plugin/internal/hostartifacts"
 	"github.com/Thunder-Compute/thunder-device-plugin/internal/thunderclient"
 )
 
@@ -433,6 +434,8 @@ type FileCDIDeviceStore struct {
 	LibCUDAPath          string
 	LibNVMLPath          string
 	NVSMIPath            string
+	HostRoot             string
+	ToolkitPath          string
 	ClientInstallCommand string
 
 	// HookPath is the host executable the container runtime runs while
@@ -466,6 +469,9 @@ func (s *FileCDIDeviceStore) Create(ctx context.Context, allocation Allocation, 
 	if strings.TrimSpace(token) == "" {
 		return "", fmt.Errorf("client enrollment token is required")
 	}
+	if err := s.validateMounts(allocation.HostArtifactProfile); err != nil {
+		return "", err
+	}
 
 	stateDir := s.stateDir(deviceName)
 	if err := os.MkdirAll(stateDir, 0700); err != nil {
@@ -481,7 +487,7 @@ func (s *FileCDIDeviceStore) Create(ctx context.Context, allocation Allocation, 
 
 	containerEdits := map[string]any{
 		"env":    s.containerEnv(qualifiedName, allocation, token),
-		"mounts": s.mounts(),
+		"mounts": s.mounts(allocation.HostArtifactProfile),
 	}
 	if hooks := s.hooks(deviceName, allocation); len(hooks) > 0 {
 		containerEdits["hooks"] = hooks
@@ -689,6 +695,7 @@ func sortArgPairs(args []string) {
 }
 
 func (s *FileCDIDeviceStore) containerEnv(qualifiedName string, allocation Allocation, token string) []string {
+	profile := effectiveHostArtifactProfile(allocation.HostArtifactProfile)
 	env := []string{
 		ThunderEnrollmentTokenEnv + "=" + token,
 		ThunderClientInstallCommandEnv + "=" + strings.TrimSpace(s.ClientInstallCommand),
@@ -700,19 +707,25 @@ func (s *FileCDIDeviceStore) containerEnv(qualifiedName string, allocation Alloc
 		"THUNDER_CDI_DEVICE=" + qualifiedName,
 		"LD_PRELOAD=/etc/thunder/libthunder.so",
 	}
-	pathDirs := uniqueNonEmpty([]string{
-		filepath.Dir(s.nvidiaSMIPath()),
+	pathDirs := []string{}
+	libraryDirs := []string{}
+	if profile != hostartifacts.ProfileNone {
+		pathDirs = append(pathDirs, filepath.Dir(s.nvidiaSMIPath()))
+		libraryDirs = append(libraryDirs, filepath.Dir(s.libCUDAPath()), filepath.Dir(s.libNVMLPath()))
+	}
+	if profile == hostartifacts.ProfileFull {
+		pathDirs = append(pathDirs, filepath.Join(s.toolkitPath(), "bin"))
+		libraryDirs = append(libraryDirs, filepath.Join(s.toolkitPath(), "lib64"))
+	}
+	pathDirs = uniqueNonEmpty(append(pathDirs,
 		"/usr/local/sbin",
 		"/usr/local/bin",
 		"/usr/sbin",
 		"/usr/bin",
 		"/sbin",
 		"/bin",
-	})
-	libraryDirs := uniqueNonEmpty([]string{
-		filepath.Dir(s.libCUDAPath()),
-		filepath.Dir(s.libNVMLPath()),
-	})
+	))
+	libraryDirs = uniqueNonEmpty(libraryDirs)
 	if len(pathDirs) > 0 {
 		env = append(env, "PATH="+strings.Join(pathDirs, ":"))
 	}
@@ -733,12 +746,20 @@ func (s *FileCDIDeviceStore) hookEnv(allocation Allocation, token string) []stri
 	}
 }
 
-func (s *FileCDIDeviceStore) mounts() []map[string]any {
-	return uniqueMounts([]map[string]any{
+func (s *FileCDIDeviceStore) mounts(profile hostartifacts.Profile) []map[string]any {
+	profile = effectiveHostArtifactProfile(profile)
+	if profile == hostartifacts.ProfileNone {
+		return nil
+	}
+	mounts := []map[string]any{
 		bindMount(s.nvidiaSMIPath()),
 		bindMount(s.libCUDAPath()),
 		bindMount(s.libNVMLPath()),
-	})
+	}
+	if profile == hostartifacts.ProfileFull {
+		mounts = append(mounts, bindMount(s.toolkitPath()))
+	}
+	return uniqueMounts(mounts)
 }
 
 func bindMount(path string) map[string]any {
