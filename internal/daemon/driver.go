@@ -139,6 +139,10 @@ type GuestConfigStore interface {
 	Remove(ctx context.Context, artifacts GuestArtifacts) error
 }
 
+type CapacityRefresher interface {
+	Refresh(ctx context.Context, allocation Allocation) error
+}
+
 type Driver struct {
 	DriverName                 string
 	NodeName                   string
@@ -148,6 +152,7 @@ type Driver struct {
 	Clients                    ThunderClientStore
 	CDI                        CDIDeviceStore
 	Guest                      GuestConfigStore
+	Capacity                   CapacityRefresher
 	Logger                     *slog.Logger
 }
 
@@ -190,6 +195,15 @@ func (d *Driver) prepareOne(ctx context.Context, claim *resourcev1.ResourceClaim
 		return devicesFor(existing.CDIName, allocation), nil
 	case err != nil && !errors.Is(err, ErrNotFound):
 		return nil, fmt.Errorf("load ThunderClient: %w", err)
+	}
+
+	if d.Capacity != nil {
+		if err := d.Capacity.Refresh(ctx, allocation); err != nil {
+			return nil, fmt.Errorf("refresh central capacity: %w", err)
+		}
+		if err := d.validateAllocatedDevices(ctx, allocation); err != nil {
+			return nil, err
+		}
 	}
 
 	tokenID, token, _, err := d.Tokens.Mint(ctx, allocation)
@@ -346,6 +360,16 @@ func (d *Driver) decodeAllocation(ctx context.Context, claim *resourcev1.Resourc
 		return Allocation{}, err
 	}
 	return allocation, nil
+}
+
+func (d *Driver) validateAllocatedDevices(ctx context.Context, allocation Allocation) error {
+	for _, allocated := range allocation.Devices {
+		if _, err := d.allocatedDevice(ctx, allocated.PoolName, allocated.DeviceName); err != nil {
+			return fmt.Errorf("allocated device %s/%s is unavailable after refreshing central capacity: %w",
+				allocated.PoolName, allocated.DeviceName, err)
+		}
+	}
+	return nil
 }
 
 func (d *Driver) allocatedDevice(ctx context.Context, poolName, deviceName string) (*resourcev1.Device, error) {
