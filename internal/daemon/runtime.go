@@ -80,6 +80,8 @@ func startDRAPlugin(ctx context.Context, cfg Config, thunderClient *thunder.Clie
 	cdiStore.LibCUDAPath = cfg.LibCUDAPath
 	cdiStore.LibNVMLPath = cfg.LibNVMLPath
 	cdiStore.NVSMIPath = cfg.NVSMIPath
+	cdiStore.HostRoot = cfg.HostRoot
+	cdiStore.ToolkitPath = cfg.HostArtifactToolkit
 	cdiStore.ClientInstallCommand = thunderClient.ClientEnrollmentCommandFor(thunder.ClientEnrollmentCommandRequest{
 		EnrollmentTokenEnv: ThunderEnrollmentTokenEnv,
 	})
@@ -101,9 +103,10 @@ func startDRAPlugin(ctx context.Context, cfg Config, thunderClient *thunder.Clie
 	log.Printf("staged CDI hook: path=%s cacheDir=%s", hookPath, cfg.KubeletPluginDir)
 
 	driver := &Driver{
-		DriverName: cfg.DRADriverName,
-		NodeName:   cfg.Node,
-		Kube:       kube,
+		DriverName:                 cfg.DRADriverName,
+		NodeName:                   cfg.Node,
+		DefaultHostArtifactProfile: cfg.HostArtifactProfile,
+		Kube:                       kube,
 		Tokens: ThunderTokenIssuer{
 			Client: thunderClient,
 			ZoneID: zoneID,

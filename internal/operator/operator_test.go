@@ -16,6 +16,8 @@ import (
 	k8stesting "k8s.io/client-go/testing"
 
 	thunder "github.com/Thunder-Compute/thunder-sdk"
+
+	"github.com/Thunder-Compute/thunder-device-plugin/internal/hostartifacts"
 )
 
 type fakeInventory struct {
@@ -57,12 +59,13 @@ func (f *fakeInventory) ListZoneOversubscriptionTargets(_ context.Context, zoneI
 
 func testConfig() Config {
 	return Config{
-		DriverName:             DefaultDriverName,
-		NamePrefix:             DefaultNamePrefix,
-		ZoneLabelKey:           DefaultZoneLabelKey,
-		ReconcileInterval:      time.Minute,
-		DeviceClassPrefix:      DefaultDeviceClassPrefix,
-		ExtendedResourcePrefix: DefaultExtendedResourcePrefix,
+		DriverName:                 DefaultDriverName,
+		NamePrefix:                 DefaultNamePrefix,
+		ZoneLabelKey:               DefaultZoneLabelKey,
+		ReconcileInterval:          time.Minute,
+		DeviceClassPrefix:          DefaultDeviceClassPrefix,
+		ExtendedResourcePrefix:     DefaultExtendedResourcePrefix,
+		DefaultHostArtifactProfile: hostartifacts.ProfileDriver,
 	}
 }
 
@@ -418,6 +421,16 @@ func TestBuildDeviceClassPinsGPUType(t *testing.T) {
 	}
 	if got := derefString(class.Spec.ExtendedResourceName); got != "thundercompute.com/gpu-a6000" {
 		t.Fatalf("extendedResourceName = %q", got)
+	}
+	if len(class.Spec.Config) != 1 || class.Spec.Config[0].Opaque == nil {
+		t.Fatalf("config = %#v", class.Spec.Config)
+	}
+	profile, err := hostartifacts.Decode(class.Spec.Config[0].Opaque.Parameters)
+	if err != nil {
+		t.Fatalf("decode class config: %v", err)
+	}
+	if profile != hostartifacts.ProfileDriver {
+		t.Fatalf("class profile = %q, want driver", profile)
 	}
 	if len(class.Spec.Selectors) != 1 || class.Spec.Selectors[0].CEL == nil {
 		t.Fatalf("selectors = %#v", class.Spec.Selectors)

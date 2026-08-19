@@ -5,6 +5,8 @@ import (
 	"os"
 	"strconv"
 	"strings"
+
+	"github.com/Thunder-Compute/thunder-device-plugin/internal/hostartifacts"
 )
 
 const (
@@ -19,6 +21,8 @@ const (
 	EnvLibCUDAPath         = "LIBCUDA_PATH"
 	EnvLibNVMLPath         = "LIBNVIDIA_ML_PATH"
 	EnvNVSMIPath           = "NVIDIA_SMI_PATH"
+	EnvHostArtifactProfile = "HOST_ARTIFACT_DEFAULT_PROFILE"
+	EnvHostArtifactToolkit = "HOST_ARTIFACT_TOOLKIT_PATH"
 	EnvZoneLabel           = "NODE_ZONE_LABEL"
 	EnvAdvertisedIPLabel   = "NODE_ADVERTISED_IP_LABEL"
 	EnvHostTargetPID       = "HOST_TARGET_PID"
@@ -42,6 +46,7 @@ const (
 	DefaultLibCUDAPath         = "/usr/lib/x86_64-linux-gnu/libcuda.so.1"
 	DefaultLibNVMLPath         = "/usr/lib/x86_64-linux-gnu/libnvidia-ml.so.1"
 	DefaultNVSMIPath           = "/usr/bin/nvidia-smi"
+	DefaultHostArtifactToolkit = "/usr/local/cuda"
 	DefaultZoneLabel           = "topology.kubernetes.io/zone"
 	DefaultAdvertisedIPLabel   = "thundercompute.com/advertised-ip"
 	DefaultHostTargetPID       = "1"
@@ -84,6 +89,8 @@ type Config struct {
 	LibCUDAPath         string
 	LibNVMLPath         string
 	NVSMIPath           string
+	HostArtifactProfile hostartifacts.Profile
+	HostArtifactToolkit string
 	ZoneLabel           string
 	AdvertisedIPLabel   string
 	HostTargetPID       string
@@ -137,6 +144,10 @@ func configFromLookup(lookup func(string) (string, bool)) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	hostArtifactProfile, err := hostartifacts.ParseProfile(optionalEnv(lookup, EnvHostArtifactProfile, string(hostartifacts.ProfileDriver)))
+	if err != nil {
+		return Config{}, fmt.Errorf("%s: %w", EnvHostArtifactProfile, err)
+	}
 
 	return Config{
 		Node:                node,
@@ -150,6 +161,8 @@ func configFromLookup(lookup func(string) (string, bool)) (Config, error) {
 		LibCUDAPath:         optionalEnv(lookup, EnvLibCUDAPath, DefaultLibCUDAPath),
 		LibNVMLPath:         optionalEnv(lookup, EnvLibNVMLPath, DefaultLibNVMLPath),
 		NVSMIPath:           optionalEnv(lookup, EnvNVSMIPath, DefaultNVSMIPath),
+		HostArtifactProfile: hostArtifactProfile,
+		HostArtifactToolkit: optionalEnv(lookup, EnvHostArtifactToolkit, DefaultHostArtifactToolkit),
 		ZoneLabel:           optionalEnv(lookup, EnvZoneLabel, DefaultZoneLabel),
 		AdvertisedIPLabel:   optionalEnv(lookup, EnvAdvertisedIPLabel, DefaultAdvertisedIPLabel),
 		HostTargetPID:       optionalEnv(lookup, EnvHostTargetPID, DefaultHostTargetPID),

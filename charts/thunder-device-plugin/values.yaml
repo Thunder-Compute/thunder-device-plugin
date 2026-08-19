@@ -91,6 +91,14 @@ node:
   # -- Node label that overrides the address Thunder clients use to reach a node. Optional; the node's own IP is used when it is absent.
   advertisedIPLabel: thundercompute.com/advertised-ip
 
+## host artifacts
+
+hostArtifacts:
+  # -- Default host artifact profile for claims that do not override it: `none`, `driver`, or `full`.
+  defaultProfile: driver
+  # -- Host toolkit directory added by the `full` profile. It is mounted read-only at the same path in the container.
+  toolkitPath: /usr/local/cuda
+
 ## nvidia
 
 nvidia:

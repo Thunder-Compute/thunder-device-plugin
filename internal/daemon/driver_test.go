@@ -12,6 +12,8 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/fake"
 	"k8s.io/dynamic-resource-allocation/kubeletplugin"
+
+	"github.com/Thunder-Compute/thunder-device-plugin/internal/hostartifacts"
 )
 
 func TestPrepareResourceClaimsMintsTokenCreatesClientAndReturnsCDI(t *testing.T) {
@@ -56,6 +58,9 @@ func TestPrepareResourceClaimsMintsTokenCreatesClientAndReturnsCDI(t *testing.T)
 	}
 	if tokens.minted != 1 {
 		t.Fatalf("minted = %d, want 1", tokens.minted)
+	}
+	if tokens.lastAllocation.HostArtifactProfile != hostartifacts.ProfileDriver {
+		t.Fatalf("host artifact profile = %q, want driver", tokens.lastAllocation.HostArtifactProfile)
 	}
 	if tokens.lastAllocation.Zone != "us-west-2a" || tokens.lastAllocation.GPUType != "A6000" || tokens.lastAllocation.GPUCount != 4 {
 		t.Fatalf("mint allocation = %#v", tokens.lastAllocation)

@@ -195,10 +195,12 @@ The advertised IP defaults to the node's own IP (`status.addresses` `InternalIP`
 then `ExternalIP`). Set the label only when clients reach a node on a different
 address, for example behind NAT.
 
-### NVIDIA, kubelet and runtime
+### Host artifacts, GPU paths, kubelet and runtime
 
 | Key | Type | Default | Description |
 | --- | --- | --- | --- |
+| `hostArtifacts.defaultProfile` | string | `driver` | Default claim profile: `none`, `driver`, or `full` |
+| `hostArtifacts.toolkitPath` | string | `/usr/local/cuda` | Read-only toolkit directory mounted by the `full` profile |
 | `nvidia.minDriverVersion` | string | `610` | Minimum driver version the daemon will enroll |
 | `nvidia.libcudaPath` | string | `/usr/lib/x86_64-linux-gnu/libcuda.so.1` | Host `libcuda`, bind-mounted into containers |
 | `nvidia.libnvidiaMLPath` | string | `/usr/lib/x86_64-linux-gnu/libnvidia-ml.so.1` | Host NVML library |

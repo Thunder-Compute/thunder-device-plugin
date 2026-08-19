@@ -74,6 +74,10 @@ spec:
               value: {{ .Values.nvidia.libnvidiaMLPath | quote }}
             - name: NVIDIA_SMI_PATH
               value: {{ .Values.nvidia.nvidiaSMIPath | quote }}
+            - name: HOST_ARTIFACT_DEFAULT_PROFILE
+              value: {{ .Values.hostArtifacts.defaultProfile | quote }}
+            - name: HOST_ARTIFACT_TOOLKIT_PATH
+              value: {{ .Values.hostArtifacts.toolkitPath | quote }}
             - name: THUNDER_API_TOKEN
               valueFrom:
                 secretKeyRef:
