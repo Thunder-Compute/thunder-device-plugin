@@ -10,6 +10,7 @@
 # What this covers:
 #   - the chart installs against a real API server (CRDs, RBAC, values schema)
 #   - the real operator publishes ResourceSlices from Thunder inventory
+#   - cordoned hosts stop contributing capacity while live clients remain a floor
 #   - the request policy is clamped to what a zone can actually serve
 #   - the scheduler allocates claims from the test charts against those slices
 #   - consumable capacity is honoured, including refusing over-large requests
@@ -297,7 +298,8 @@ write_inventory() {
     hosts="$(jq -c --argjson hosts "${hosts}" --arg id "host-${index}" \
       --arg type "${type}" --arg count "${count}" \
       '$hosts + [{hostId: $id, zoneId: "zone-local", displayName: $id, hostname: $id,
-                  gpuType: $type, gpuCount: ($count | tonumber), status: "active"}]' <<<'null')"
+                  gpuType: $type, gpuCount: ($count | tonumber), status: "active",
+                  configurations: {cordoned: false}}]' <<<'null')"
   done
 
   jq -nc --arg zone "${ZONE}" --argjson hosts "${hosts}" \
@@ -325,9 +327,10 @@ start_stub() {
   # Bound to the kind bridge address, not 0.0.0.0, so the cluster can reach it
   # without exposing the stub to the rest of the network. It runs outside the
   # cluster on purpose: it is scaffolding, not a component.
-  STUB_HOST="$(kind_bridge_address)"
+  STUB_HOST="$(kind_bridge_address "${CLUSTER}" || true)"
   if [[ -z "${STUB_HOST}" ]]; then
-    check_fail "find the kind bridge address" "docker network inspect kind returned no IPv4 gateway"
+    check_fail "find the kind bridge address" \
+      "neither the kind network's IPAM nor ${CLUSTER}-control-plane yielded an IPv4 gateway"
     return 1
   fi
 
@@ -435,6 +438,69 @@ test_helm_test() {
   else
     check_fail "the chart's helm test passed in cluster" \
       "$(tail -5 "${WORK_DIR}/helmtest.log"; kube -n "${NAMESPACE}" logs "${RELEASE}-test-inventory" 2>/dev/null | tail -5)"
+  fi
+}
+
+# Central reports cordon as operator-declared configuration on each host. The
+# operator must remove that host from new DRA capacity, while the existing
+# client count remains a floor so cordon never behaves like drain.
+test_cordon_capacity() {
+  step "Cordoned host capacity"
+
+  local next_inventory="${WORK_DIR}/inventory.next.json"
+  jq '(.hosts[].configurations.cordoned) = true' \
+    "${WORK_DIR}/inventory.json" > "${next_inventory}"
+  mv "${next_inventory}" "${WORK_DIR}/inventory.json"
+
+  if retry 90 2 "cordoned pool removal" -- slice_gone_for_gpu_type "${GPU_TYPE}"; then
+    check_pass "an all-cordoned GPU type publishes no new capacity"
+  else
+    check_fail "an all-cordoned GPU type publishes no new capacity" \
+      "pool still has $(kube get resourceslice "$(slice_for_gpu_type "${GPU_TYPE}")" -o json 2>/dev/null | jq -r '.spec.devices | length' || echo unknown) devices"
+    return 1
+  fi
+  if retry 60 2 "cordoned class removal" -- resource_gone deviceclass "${TYPED_DEVICE_CLASS}"; then
+    check_pass "the typed resource disappears with all of its schedulable hosts"
+  else
+    check_fail "the typed resource disappears with all of its schedulable hosts"
+    return 1
+  fi
+
+  jq --arg type "${GPU_TYPE}" '
+      .clients = [{
+        clientId: "running-client", zoneId: "zone-local", displayName: "running-client",
+        gpuType: $type, gpuCount: 2,
+        createdAt: "2026-01-01T00:00:00Z", updatedAt: "2026-01-01T00:00:00Z"
+      }]' "${WORK_DIR}/inventory.json" > "${next_inventory}"
+  mv "${next_inventory}" "${WORK_DIR}/inventory.json"
+
+  if retry 90 2 "live-client capacity floor" -- pool_device_count_is "${GPU_TYPE}" 2; then
+    check_pass "two live client GPUs remain represented while every host is cordoned"
+  else
+    check_fail "two live client GPUs remain represented while every host is cordoned"
+    return 1
+  fi
+  local slice
+  slice="$(slice_for_gpu_type "${GPU_TYPE}")"
+  check_eq "cordoned hosts contribute zero physical capacity" "0" \
+    "$(kube get resourceslice "${slice}" -o json | jq -r --arg k "${THUNDER_DOMAIN}/host-capacity" '.metadata.labels[$k] // ""')"
+  check_eq "the published floor records two live clients" "2" \
+    "$(kube get resourceslice "${slice}" -o json | jq -r --arg k "${THUNDER_DOMAIN}/client-capacity" '.metadata.labels[$k] // ""')"
+
+  jq '(.hosts[].configurations.cordoned) = false | .clients = []' \
+    "${WORK_DIR}/inventory.json" > "${next_inventory}"
+  mv "${next_inventory}" "${WORK_DIR}/inventory.json"
+
+  if retry 90 2 "uncordoned pool restoration" -- pool_device_count_is "${GPU_TYPE}" "${GPU_CAPACITY}"; then
+    check_pass "uncordoning restores physical DRA capacity"
+  else
+    check_fail "uncordoning restores physical DRA capacity"
+    return 1
+  fi
+  if retry 60 2 "uncordoned class restoration" -- resource_exists deviceclass "${TYPED_DEVICE_CLASS}"; then
+    check_pass "uncordoning restores the typed resource"
+  else
+    check_fail "uncordoning restores the typed resource"
   fi
 }
 
@@ -746,6 +812,7 @@ install_chart
 run_operator
 test_operator_only_reads
 test_helm_test
+test_cordon_capacity
 test_allocation
 test_new_gpu_type_appears
 test_extended_resource
