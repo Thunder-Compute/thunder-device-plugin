@@ -3,6 +3,9 @@ package daemon
 import (
 	"context"
 	"errors"
+	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -101,6 +104,7 @@ func newTestReconciler(t *testing.T, runner *scriptedRunner) (*reconciler, *reco
 		NVSMIPath:        "/nvidia-smi",
 		MinDriverVersion: "610",
 		ZoneLabel:        DefaultZoneLabel,
+		KubeletPluginDir: filepath.Join(hostRoot, "kubelet-plugin"),
 	}
 	nodes := &fakeNodeInfoReader{node: NodeInfo{
 		Labels:     map[string]string{DefaultZoneLabel: "us-west-2a"},
@@ -219,14 +223,118 @@ func TestReconcileRetriesAFailedEnrollmentWithAFreshToken(t *testing.T) {
 		t.Fatalf("enrollments = %d, want 1", got)
 	}
 
-	tokens := 0
+	var enrollmentWrites []recordedRequest
 	for _, write := range registry.writes() {
-		if write.Path == "/api/v1/enrollment-tokens" {
-			tokens++
+		if write.Path == "/api/v1/enrollment-tokens" || strings.HasPrefix(write.Path, "/api/v1/enrollment-tokens/") {
+			enrollmentWrites = append(enrollmentWrites, write)
 		}
 	}
-	if tokens != 2 {
-		t.Fatalf("enrollment tokens minted = %d, want 2 (one per attempt)", tokens)
+	if len(enrollmentWrites) != 3 {
+		t.Fatalf("enrollment writes = %#v, want mint, revoke, mint", enrollmentWrites)
+	}
+	if enrollmentWrites[0].Method != http.MethodPost ||
+		enrollmentWrites[1].Method != http.MethodDelete ||
+		enrollmentWrites[1].Path != "/api/v1/enrollment-tokens/token-id-server/node" ||
+		enrollmentWrites[2].Method != http.MethodPost {
+		t.Fatalf("enrollment writes = %#v, want POST, DELETE previous, POST", enrollmentWrites)
+	}
+}
+
+func TestReconcileReplacesAnAlreadyMissingEnrollment(t *testing.T) {
+	runner := &scriptedRunner{statuses: []scriptedStatus{{output: `{"healthy":false}`}}}
+	reconciler, registry := newTestReconciler(t, runner)
+	statePath := serverEnrollmentStatePath(reconciler.cfg)
+	if err := writeServerEnrollmentState(statePath, serverEnrollmentState{
+		EnrollmentTokenID: "expired-token-id",
+		Node:              reconciler.cfg.Node,
+		ZoneID:            "zone-old",
+	}); err != nil {
+		t.Fatalf("write previous enrollment state: %v", err)
+	}
+	registry.setEnrollmentDeleteStatus(http.StatusNotFound)
+
+	if err := reconciler.reconcile(context.Background()); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	var enrollmentWrites []recordedRequest
+	for _, write := range registry.writes() {
+		if write.Path == "/api/v1/enrollment-tokens" || strings.HasPrefix(write.Path, "/api/v1/enrollment-tokens/") {
+			enrollmentWrites = append(enrollmentWrites, write)
+		}
+	}
+	if len(enrollmentWrites) != 2 ||
+		enrollmentWrites[0].Method != http.MethodDelete ||
+		enrollmentWrites[0].Path != "/api/v1/enrollment-tokens/expired-token-id/node" ||
+		enrollmentWrites[1].Method != http.MethodPost {
+		t.Fatalf("enrollment writes = %#v, want DELETE missing enrollment then POST replacement", enrollmentWrites)
+	}
+	state, found, err := readServerEnrollmentState(statePath)
+	if err != nil {
+		t.Fatalf("read replacement enrollment state: %v", err)
+	}
+	if !found || state.EnrollmentTokenID != "token-id-server" {
+		t.Fatalf("replacement enrollment state = %#v, found=%t", state, found)
+	}
+}
+
+func TestReconcileDoesNotMintWhenPreviousEnrollmentCannotBeRevoked(t *testing.T) {
+	runner := &scriptedRunner{statuses: []scriptedStatus{{output: `{"healthy":false}`}}}
+	reconciler, registry := newTestReconciler(t, runner)
+	statePath := serverEnrollmentStatePath(reconciler.cfg)
+	previous := serverEnrollmentState{
+		EnrollmentTokenID: "existing-token-id",
+		Node:              reconciler.cfg.Node,
+		ZoneID:            "zone-old",
+	}
+	if err := writeServerEnrollmentState(statePath, previous); err != nil {
+		t.Fatalf("write previous enrollment state: %v", err)
+	}
+	registry.setEnrollmentDeleteStatus(http.StatusInternalServerError)
+
+	err := reconciler.reconcile(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "revoke previous thunder node enrollment") {
+		t.Fatalf("reconcile error = %v, want previous-enrollment revocation failure", err)
+	}
+	if got := runner.enrollments(); got != 0 {
+		t.Fatalf("installer runs = %d, want 0", got)
+	}
+	for _, write := range registry.writes() {
+		if write.Method == http.MethodPost && write.Path == "/api/v1/enrollment-tokens" {
+			t.Fatalf("minted a replacement before revocation succeeded: %#v", write)
+		}
+	}
+	state, found, readErr := readServerEnrollmentState(statePath)
+	if readErr != nil {
+		t.Fatalf("read retained enrollment state: %v", readErr)
+	}
+	if !found || state.EnrollmentTokenID != previous.EnrollmentTokenID {
+		t.Fatalf("retained enrollment state = %#v, found=%t, want %#v", state, found, previous)
+	}
+}
+
+func TestReconcileDoesNotMintFromCorruptEnrollmentState(t *testing.T) {
+	runner := &scriptedRunner{statuses: []scriptedStatus{{output: `{"healthy":false}`}}}
+	reconciler, registry := newTestReconciler(t, runner)
+	statePath := serverEnrollmentStatePath(reconciler.cfg)
+	if err := os.MkdirAll(filepath.Dir(statePath), 0o755); err != nil {
+		t.Fatalf("create enrollment state directory: %v", err)
+	}
+	if err := os.WriteFile(statePath, []byte("not-json"), 0o600); err != nil {
+		t.Fatalf("write corrupt enrollment state: %v", err)
+	}
+
+	err := reconciler.reconcile(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "load previous thunder node enrollment") {
+		t.Fatalf("reconcile error = %v, want corrupt-state failure", err)
+	}
+	if got := runner.enrollments(); got != 0 {
+		t.Fatalf("installer runs = %d, want 0", got)
+	}
+	for _, write := range registry.writes() {
+		if write.Method == http.MethodPost && write.Path == "/api/v1/enrollment-tokens" {
+			t.Fatalf("minted an untrackable replacement from corrupt state: %#v", write)
+		}
 	}
 }
 
