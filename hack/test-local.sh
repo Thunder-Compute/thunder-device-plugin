@@ -327,7 +327,7 @@ start_stub() {
   # Bound to the kind bridge address, not 0.0.0.0, so the cluster can reach it
   # without exposing the stub to the rest of the network. It runs outside the
   # cluster on purpose: it is scaffolding, not a component.
-  STUB_HOST="$(kind_bridge_address "${CLUSTER}")"
+  STUB_HOST="$(kind_bridge_address "${CLUSTER}" || true)"
   if [[ -z "${STUB_HOST}" ]]; then
     check_fail "find the kind bridge address" \
       "neither the kind network's IPAM nor ${CLUSTER}-control-plane yielded an IPv4 gateway"
