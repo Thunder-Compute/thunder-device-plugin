@@ -30,10 +30,11 @@ type recordingRegistry struct {
 
 	// The handlers run on the http server's goroutines while the test polls
 	// from its own, so everything they share is guarded.
-	mu                     sync.Mutex
-	requests               []recordedRequest
-	zones                  []map[string]any
-	deleteEnrollmentStatus int
+	mu                       sync.Mutex
+	requests                 []recordedRequest
+	zones                    []map[string]any
+	deleteEnrollmentStatus   int
+	createEnrollmentResponse map[string]any
 }
 
 func newRecordingRegistry(t *testing.T) *recordingRegistry {
@@ -53,6 +54,10 @@ func newRecordingRegistry(t *testing.T) *recordingRegistry {
 	})
 	mux.HandleFunc("POST /api/v1/enrollment-tokens", func(w http.ResponseWriter, r *http.Request) {
 		body := registry.record(t, r)
+		if response := registry.enrollmentCreateResponse(); response != nil {
+			writeJSON(t, w, response)
+			return
+		}
 		role, _ := body["role"].(string)
 		writeJSON(t, w, map[string]any{
 			"enrollmentTokenId": "token-id-" + role,
@@ -114,6 +119,18 @@ func (r *recordingRegistry) enrollmentDeleteStatus() int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.deleteEnrollmentStatus
+}
+
+func (r *recordingRegistry) setEnrollmentCreateResponse(response map[string]any) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.createEnrollmentResponse = response
+}
+
+func (r *recordingRegistry) enrollmentCreateResponse() map[string]any {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.createEnrollmentResponse
 }
 
 // writes returns only the requests that changed state.

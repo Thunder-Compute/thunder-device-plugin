@@ -313,6 +313,41 @@ func TestReconcileDoesNotMintWhenPreviousEnrollmentCannotBeRevoked(t *testing.T)
 	}
 }
 
+func TestReconcileRevokesMintedEnrollmentWhenSecretIsMissing(t *testing.T) {
+	runner := &scriptedRunner{statuses: []scriptedStatus{{output: `{"healthy":false}`}}}
+	reconciler, registry := newTestReconciler(t, runner)
+	registry.setEnrollmentCreateResponse(map[string]any{
+		"enrollmentTokenId": "token-id-partial",
+		"enrollmentToken":   "",
+		"role":              "server",
+	})
+
+	err := reconciler.reconcile(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "empty enrollment token or ID") {
+		t.Fatalf("reconcile error = %v, want empty-token failure", err)
+	}
+	if got := runner.enrollments(); got != 0 {
+		t.Fatalf("installer runs = %d, want 0", got)
+	}
+
+	var enrollmentWrites []recordedRequest
+	for _, write := range registry.writes() {
+		if write.Path == "/api/v1/enrollment-tokens" || strings.HasPrefix(write.Path, "/api/v1/enrollment-tokens/") {
+			enrollmentWrites = append(enrollmentWrites, write)
+		}
+	}
+	if len(enrollmentWrites) != 2 ||
+		enrollmentWrites[0].Method != http.MethodPost ||
+		enrollmentWrites[1].Method != http.MethodDelete ||
+		enrollmentWrites[1].Path != "/api/v1/enrollment-tokens/token-id-partial/node" {
+		t.Fatalf("enrollment writes = %#v, want POST then DELETE of the unusable ID", enrollmentWrites)
+	}
+
+	if _, found, readErr := readServerEnrollmentState(serverEnrollmentStatePath(reconciler.cfg)); readErr != nil || found {
+		t.Fatalf("enrollment state found=%t err=%v, want no persisted ID", found, readErr)
+	}
+}
+
 func TestReconcileDoesNotMintFromCorruptEnrollmentState(t *testing.T) {
 	runner := &scriptedRunner{statuses: []scriptedStatus{{output: `{"healthy":false}`}}}
 	reconciler, registry := newTestReconciler(t, runner)

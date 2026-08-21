@@ -81,7 +81,12 @@ func writeServerEnrollmentState(path string, state serverEnrollmentState) error 
 	if err := os.Rename(temporaryPath, path); err != nil {
 		return fmt.Errorf("replace server enrollment state %s: %w", path, err)
 	}
-	return syncDirectory(dir)
+	// Rename is the persistence boundary the rest of enroll relies on: the
+	// replacement ID is already at the final path. Directory sync is
+	// durability only, and returning it as a failed write would revoke a
+	// tracked enrollment while leaving the state file in place.
+	_ = syncDirectory(dir)
+	return nil
 }
 
 func removeServerEnrollmentState(path string) error {

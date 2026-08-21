@@ -299,8 +299,19 @@ func (r *reconciler) enroll(ctx context.Context, cfg Config) error {
 	if err != nil {
 		return fmt.Errorf("create thunder node enrollment: %w", err)
 	}
-	if strings.TrimSpace(token.EnrollmentTokenID) == "" || strings.TrimSpace(token.EnrollmentToken) == "" {
-		return fmt.Errorf("create thunder node enrollment: Central returned an empty enrollment token or ID")
+	tokenID := strings.TrimSpace(token.EnrollmentTokenID)
+	if tokenID == "" || strings.TrimSpace(token.EnrollmentToken) == "" {
+		err := fmt.Errorf("create thunder node enrollment: Central returned an empty enrollment token or ID")
+		if tokenID == "" {
+			return err
+		}
+		// The ID is a Central object even without a usable secret. Revoke it
+		// so a broken mint cannot accumulate untracked server enrollments.
+		_, revokeErr := r.client.UnenrollServer(ctx, tokenID)
+		if revokeErr != nil && !thunder.IsNotFound(revokeErr) {
+			return errors.Join(err, fmt.Errorf("revoke untracked thunder node enrollment %s: %w", tokenID, revokeErr))
+		}
+		return err
 	}
 
 	statePath := serverEnrollmentStatePath(cfg)
