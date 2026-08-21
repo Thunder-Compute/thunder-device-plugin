@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -29,9 +30,10 @@ type recordingRegistry struct {
 
 	// The handlers run on the http server's goroutines while the test polls
 	// from its own, so everything they share is guarded.
-	mu       sync.Mutex
-	requests []recordedRequest
-	zones    []map[string]any
+	mu                     sync.Mutex
+	requests               []recordedRequest
+	zones                  []map[string]any
+	deleteEnrollmentStatus int
 }
 
 func newRecordingRegistry(t *testing.T) *recordingRegistry {
@@ -60,6 +62,11 @@ func newRecordingRegistry(t *testing.T) *recordingRegistry {
 	})
 	mux.HandleFunc("DELETE /api/v1/enrollment-tokens/{id}/node", func(w http.ResponseWriter, r *http.Request) {
 		registry.record(t, r)
+		if status := registry.enrollmentDeleteStatus(); status != 0 && status != http.StatusOK {
+			w.WriteHeader(status)
+			writeJSON(t, w, map[string]any{"error": "delete_failed"})
+			return
+		}
 		writeJSON(t, w, map[string]any{"enrollmentTokenId": r.PathValue("id"), "nodeDeleted": true})
 	})
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -95,6 +102,18 @@ func (r *recordingRegistry) addZone(zone map[string]any) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.zones = append(r.zones, zone)
+}
+
+func (r *recordingRegistry) setEnrollmentDeleteStatus(status int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.deleteEnrollmentStatus = status
+}
+
+func (r *recordingRegistry) enrollmentDeleteStatus() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.deleteEnrollmentStatus
 }
 
 // writes returns only the requests that changed state.
@@ -280,6 +299,7 @@ func TestRunEnrollsTheServerWithItsAdvertisedIPAndZone(t *testing.T) {
 		LibNVMLPath:      "/libnvidia-ml.so.1",
 		NVSMIPath:        "/nvidia-smi",
 		MinDriverVersion: "610",
+		KubeletPluginDir: filepath.Join(hostRoot, "kubelet-plugin"),
 		ZoneLabel:        DefaultZoneLabel,
 		// DRA is served only after enrollment, and starting it needs an
 		// in-cluster config this test does not have.

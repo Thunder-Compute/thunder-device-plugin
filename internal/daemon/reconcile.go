@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -278,8 +279,9 @@ func isTransitional(status thunderStatus) bool {
 }
 
 // enroll runs the checks and the Thunder installer that put this node into its
-// zone. The enrollment token is minted per attempt: it is single-use, so a
-// retry needs a fresh one.
+// zone. Before minting, it revokes the enrollment ID persisted by the previous
+// attempt. The replacement ID is persisted before the installer runs, so even
+// a failed install or pod restart cannot make the next pass mint blindly.
 func (r *reconciler) enroll(ctx context.Context, cfg Config) error {
 	gpuCount, driverVersion, err := nvidiaChecks(ctx, cfg, r.runner)
 	if err != nil {
@@ -287,11 +289,32 @@ func (r *reconciler) enroll(ctx context.Context, cfg Config) error {
 	}
 	log.Printf("nvidia checks passed: driver=%s physical_gpus=%d", driverVersion, gpuCount)
 
+	if err := r.revokePreviousServerEnrollment(ctx, cfg); err != nil {
+		return err
+	}
+
 	token, err := r.client.CreateServerEnrollment(ctx, thunder.CreateServerEnrollmentRequest{
 		ZoneID: r.zoneID,
 	})
 	if err != nil {
 		return fmt.Errorf("create thunder node enrollment: %w", err)
+	}
+	if strings.TrimSpace(token.EnrollmentTokenID) == "" || strings.TrimSpace(token.EnrollmentToken) == "" {
+		return fmt.Errorf("create thunder node enrollment: Central returned an empty enrollment token or ID")
+	}
+
+	statePath := serverEnrollmentStatePath(cfg)
+	if err := writeServerEnrollmentState(statePath, serverEnrollmentState{
+		EnrollmentTokenID: token.EnrollmentTokenID,
+		Node:              cfg.Node,
+		ZoneID:            r.zoneID,
+	}); err != nil {
+		persistErr := fmt.Errorf("persist thunder node enrollment %s before install: %w", token.EnrollmentTokenID, err)
+		_, revokeErr := r.client.UnenrollServer(ctx, token.EnrollmentTokenID)
+		if revokeErr != nil && !thunder.IsNotFound(revokeErr) {
+			return errors.Join(persistErr, fmt.Errorf("revoke untracked thunder node enrollment %s: %w", token.EnrollmentTokenID, revokeErr))
+		}
+		return persistErr
 	}
 
 	command, err := withTransientThunderd(r.client.ServerEnrollmentCommand(thunder.ServerEnrollmentCommandRequest{
@@ -309,6 +332,35 @@ func (r *reconciler) enroll(ctx context.Context, cfg Config) error {
 	}
 
 	log.Printf("thunder node setup completed: node=%s enrollmentTokenId=%s", cfg.Node, token.EnrollmentTokenID)
+	return nil
+}
+
+// revokePreviousServerEnrollment enforces one locally tracked server
+// enrollment at a time. Not found means the token expired, was already
+// revoked, or never completed enrollment; all three are safe to replace.
+func (r *reconciler) revokePreviousServerEnrollment(ctx context.Context, cfg Config) error {
+	statePath := serverEnrollmentStatePath(cfg)
+	state, found, err := readServerEnrollmentState(statePath)
+	if err != nil {
+		return fmt.Errorf("load previous thunder node enrollment: %w", err)
+	}
+	if !found {
+		return nil
+	}
+
+	_, err = r.client.UnenrollServer(ctx, state.EnrollmentTokenID)
+	if err != nil && !thunder.IsNotFound(err) {
+		return fmt.Errorf("revoke previous thunder node enrollment %s: %w", state.EnrollmentTokenID, err)
+	}
+	notFound := thunder.IsNotFound(err)
+	if err := removeServerEnrollmentState(statePath); err != nil {
+		return fmt.Errorf("clear revoked thunder node enrollment %s: %w", state.EnrollmentTokenID, err)
+	}
+	if notFound {
+		log.Printf("previous thunder node enrollment was already absent: node=%s enrollmentTokenId=%s", cfg.Node, state.EnrollmentTokenID)
+	} else {
+		log.Printf("revoked previous thunder node enrollment: node=%s enrollmentTokenId=%s", cfg.Node, state.EnrollmentTokenID)
+	}
 	return nil
 }
 
