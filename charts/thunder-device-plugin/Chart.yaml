@@ -5,8 +5,8 @@ type: application
 
 # The chart version is authoritative for packaged Helm releases. CI records
 # the exact published image tags explicitly in values.yaml before release.
-version: 0.1.0
-appVersion: "0.1.0"
+version: 0.2.0
+appVersion: "0.2.0"
 
 kubeVersion: ">=1.34.0-0"
 
