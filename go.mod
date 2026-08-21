@@ -3,7 +3,7 @@ module github.com/Thunder-Compute/thunder-device-plugin
 go 1.25.0
 
 require (
-	github.com/Thunder-Compute/thunder-sdk v0.1.1-0.20260820213702-4e56982dc1a7
+	github.com/Thunder-Compute/thunder-sdk v0.2.0
 	golang.org/x/sys v0.38.0
 	k8s.io/api v0.35.0
 	k8s.io/apimachinery v0.35.0
