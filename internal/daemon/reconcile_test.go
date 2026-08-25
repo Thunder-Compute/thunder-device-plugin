@@ -76,7 +76,25 @@ func (r *scriptedRunner) enrollments() int {
 // rather than downloading the CLI and spending an enrollment token on it,
 // including the ones that failed.
 func (r *scriptedRunner) restartAttempts() int {
-	return countCommands(r.attempted, "thunder up")
+	// The trailing space excludes "thunder update", which starts with the
+	// same characters. (by claude)
+	return countCommands(r.attempted, "thunder up ")
+}
+
+// updateAttempts counts `thunder update` retries, excluding rollbacks.
+// (by claude)
+func (r *scriptedRunner) updateAttempts() int {
+	count := 0
+	for _, command := range r.attempted {
+		if strings.Contains(command, "thunder update") && !strings.Contains(command, "--rollback") {
+			count++
+		}
+	}
+	return count
+}
+
+func (r *scriptedRunner) rollbackAttempts() int {
+	return countCommands(r.attempted, "thunder update --rollback")
 }
 
 func countCommands(commands []string, substring string) int {
@@ -841,55 +859,6 @@ func TestFetchThunderdChecksumParsesTheThunderdLine(t *testing.T) {
 	}
 }
 
-// The checksum is only fetched once the budget is spent, and a change
-// resets the budget and reattempts the repair immediately. (by claude)
-func TestReconcileRepairBudgetResetsOnANewThunderdChecksum(t *testing.T) {
-	restore := repairThunderdChecksum
-	t.Cleanup(func() { repairThunderdChecksum = restore })
-	checksum := "checksum-1"
-	repairThunderdChecksum = func(context.Context, string) (string, error) { return checksum, nil }
-
-	unhealthy := `{"healthy":false,"service":{"active":"inactive"},"config":{"authTokenConfigured":true}}`
-	statuses := make([]scriptedStatus, repairAttemptLimit+2)
-	for i := range statuses {
-		statuses[i] = scriptedStatus{output: unhealthy}
-	}
-	runner := &scriptedRunner{statuses: statuses}
-	budget := &memoryRepairBudgetStore{}
-	reconciler, _ := newTestReconciler(t, runner)
-	reconciler.repairBudget = budget
-	ctx := context.Background()
-
-	for i := 0; i < repairAttemptLimit; i++ {
-		if err := reconciler.reconcile(ctx); err != nil {
-			t.Fatalf("pass %d: %v", i, err)
-		}
-	}
-
-	// Still spent, same checksum served: no repair, but it gets stamped.
-	if err := reconciler.reconcile(ctx); err != nil {
-		t.Fatalf("pass while spent: %v", err)
-	}
-	if got := runner.restartAttempts(); got != repairAttemptLimit {
-		t.Fatalf("restart attempts while spent = %d, want %d", got, repairAttemptLimit)
-	}
-	if budget.marker.ThunderdChecksum != checksum {
-		t.Fatalf("stamped checksum = %q, want %q", budget.marker.ThunderdChecksum, checksum)
-	}
-
-	// Distribution now serves a different thunderd: reset and retry.
-	checksum = "checksum-2"
-	if err := reconciler.reconcile(ctx); err != nil {
-		t.Fatalf("pass after checksum change: %v", err)
-	}
-	if got := runner.restartAttempts(); got != repairAttemptLimit+1 {
-		t.Fatalf("restart attempts after checksum change = %d, want %d", got, repairAttemptLimit+1)
-	}
-	if budget.marker.ThunderdChecksum != checksum {
-		t.Fatalf("restamped checksum = %q, want %q", budget.marker.ThunderdChecksum, checksum)
-	}
-}
-
 // A checksum fetch failure must not reset the budget. (by claude)
 func TestReconcileRepairBudgetStaysSpentWhenTheChecksumFetchFails(t *testing.T) {
 	restore := repairThunderdChecksum
@@ -920,8 +889,141 @@ func TestReconcileRepairBudgetStaysSpentWhenTheChecksumFetchFails(t *testing.T) 
 	if got := runner.restartAttempts(); got != repairAttemptLimit {
 		t.Fatalf("restart attempts = %d, want %d (a fetch error must not reset the budget)", got, repairAttemptLimit)
 	}
-	if budget.marker.ThunderdChecksum != "" {
-		t.Fatalf("checksum stamped despite the fetch failing: %q", budget.marker.ThunderdChecksum)
+	if budget.marker.AttemptedChecksum != "" {
+		t.Fatalf("checksum stamped despite the fetch failing: %q", budget.marker.AttemptedChecksum)
+	}
+}
+
+// The full checksum-retry lifecycle: a new thunderd resets the spent budget
+// and is retried with `thunder update` (never `thunder up`, which cannot
+// install it); if that round also spends the budget, a rollback is tried
+// once and the checksum is blacklisted so it never resets the budget again.
+// (by claude)
+func TestReconcileRepairBudgetChecksumRetryUpdatesRollsBackAndBlacklists(t *testing.T) {
+	restore := repairThunderdChecksum
+	t.Cleanup(func() { repairThunderdChecksum = restore })
+	checksum := "csum-1"
+	repairThunderdChecksum = func(context.Context, string) (string, error) { return checksum, nil }
+
+	unhealthy := `{"healthy":false,"service":{"active":"inactive"},"config":{"authTokenConfigured":true}}`
+	statuses := make([]scriptedStatus, 12)
+	for i := range statuses {
+		statuses[i] = scriptedStatus{output: unhealthy}
+	}
+	runner := &scriptedRunner{statuses: statuses}
+	budget := &memoryRepairBudgetStore{}
+	reconciler, _ := newTestReconciler(t, runner)
+	reconciler.repairBudget = budget
+	ctx := context.Background()
+
+	// Passes 1-5: an ordinary round of restarts spends the budget.
+	for i := 0; i < repairAttemptLimit; i++ {
+		if err := reconciler.reconcile(ctx); err != nil {
+			t.Fatalf("pass %d: %v", i, err)
+		}
+	}
+	if got := runner.restartAttempts(); got != repairAttemptLimit {
+		t.Fatalf("restart attempts = %d, want %d", got, repairAttemptLimit)
+	}
+
+	// Pass 6: first observation while spent -- stamped, not reset.
+	if err := reconciler.reconcile(ctx); err != nil {
+		t.Fatalf("pass 6: %v", err)
+	}
+	if got := runner.restartAttempts(); got != repairAttemptLimit {
+		t.Fatalf("restart attempts after first observation = %d, want %d", got, repairAttemptLimit)
+	}
+
+	// Pass 7: distribution serves a new thunderd -- reset, retry with
+	// `thunder update`, not `thunder up`.
+	checksum = "csum-2"
+	if err := reconciler.reconcile(ctx); err != nil {
+		t.Fatalf("pass 7: %v", err)
+	}
+	if got := runner.updateAttempts(); got != 1 {
+		t.Fatalf("update attempts = %d, want 1", got)
+	}
+	if got := runner.restartAttempts(); got != repairAttemptLimit {
+		t.Fatalf("restart attempts must not grow on the update-retry pass = %d, want %d", got, repairAttemptLimit)
+	}
+
+	// Passes 8-11: the round continues with ordinary restarts and spends the
+	// budget again -- a rollback is tried exactly once.
+	for i := 0; i < repairAttemptLimit-1; i++ {
+		if err := reconciler.reconcile(ctx); err != nil {
+			t.Fatalf("round pass %d: %v", i, err)
+		}
+	}
+	if got := runner.rollbackAttempts(); got != 1 {
+		t.Fatalf("rollback attempts = %d, want 1", got)
+	}
+	if budget.marker.FailedChecksum != "csum-2" {
+		t.Fatalf("failed checksum = %q, want csum-2", budget.marker.FailedChecksum)
+	}
+	restartsAfterRound := runner.restartAttempts()
+
+	// Pass 12: distribution still serves the failed checksum -- it must
+	// never trigger a second reset.
+	if err := reconciler.reconcile(ctx); err != nil {
+		t.Fatalf("pass 12: %v", err)
+	}
+	if got := runner.restartAttempts(); got != restartsAfterRound {
+		t.Fatalf("restart attempts after the failed checksum = %d, want %d (no second reset)", got, restartsAfterRound)
+	}
+	if got := runner.updateAttempts(); got != 1 {
+		t.Fatalf("update attempts after the failed checksum = %d, want 1 (no retry)", got)
+	}
+	if got := runner.rollbackAttempts(); got != 1 {
+		t.Fatalf("rollback attempts after the failed checksum = %d, want 1 (no retry)", got)
+	}
+}
+
+// Today's CLI has no --rollback flag, so the rollback command fails; the
+// checksum must still be blacklisted and the daemon must still give up.
+// (by claude)
+func TestReconcileRepairBudgetRecordsFailedChecksumEvenWhenRollbackFails(t *testing.T) {
+	restore := repairThunderdChecksum
+	t.Cleanup(func() { repairThunderdChecksum = restore })
+	checksum := "csum-1"
+	repairThunderdChecksum = func(context.Context, string) (string, error) { return checksum, nil }
+
+	unhealthy := `{"healthy":false,"service":{"active":"inactive"},"config":{"authTokenConfigured":true}}`
+	statuses := make([]scriptedStatus, 11)
+	for i := range statuses {
+		statuses[i] = scriptedStatus{output: unhealthy}
+	}
+	runner := &scriptedRunner{
+		statuses:  statuses,
+		shellErrs: map[string]error{"thunder update --rollback": errors.New("unknown flag --rollback")},
+	}
+	budget := &memoryRepairBudgetStore{}
+	reconciler, _ := newTestReconciler(t, runner)
+	reconciler.repairBudget = budget
+	ctx := context.Background()
+
+	for i := 0; i < repairAttemptLimit; i++ {
+		if err := reconciler.reconcile(ctx); err != nil {
+			t.Fatalf("pass %d: %v", i, err)
+		}
+	}
+	if err := reconciler.reconcile(ctx); err != nil { // stamp
+		t.Fatalf("stamp pass: %v", err)
+	}
+	checksum = "csum-2"
+	if err := reconciler.reconcile(ctx); err != nil { // update retry
+		t.Fatalf("update retry pass: %v", err)
+	}
+	for i := 0; i < repairAttemptLimit-1; i++ {
+		if err := reconciler.reconcile(ctx); err != nil {
+			t.Fatalf("round pass %d: %v", i, err)
+		}
+	}
+
+	if got := runner.rollbackAttempts(); got != 1 {
+		t.Fatalf("rollback attempts = %d, want 1 (tried once even though it fails)", got)
+	}
+	if budget.marker.FailedChecksum != "csum-2" {
+		t.Fatalf("failed checksum = %q, want csum-2 (recorded despite the rollback failing)", budget.marker.FailedChecksum)
 	}
 }
 

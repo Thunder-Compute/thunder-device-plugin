@@ -34,12 +34,18 @@ const (
 // mid-outage. (by claude)
 type repairBudgetMarker struct {
 	Attempts int `json:"attempts"`
-	// DaemonVersion is the daemon build that last wrote this marker (secondary
-	// reset trigger: new repair code justifies a retry too). (by claude)
+	// DaemonVersion is the daemon build that last wrote this marker
+	// (secondary reset trigger). (by claude)
 	DaemonVersion string `json:"daemonVersion,omitempty"`
-	// ThunderdChecksum is the thunderd sha256 last seen served, stamped only
-	// once the budget is spent (primary reset trigger). (by claude)
-	ThunderdChecksum string `json:"thunderdChecksum,omitempty"`
+	// AttemptedChecksum is the served thunderd sha the last update-retry
+	// installed (primary reset trigger, checked only once spent). (by claude)
+	AttemptedChecksum string `json:"attemptedChecksum,omitempty"`
+	// FailedChecksum is a sha an update-retry round already failed on, so it
+	// never triggers a second reset. (by claude)
+	FailedChecksum string `json:"failedChecksum,omitempty"`
+	// UpdateRetried marks a round that began with a checksum-triggered
+	// `thunder update`, so giving up again triggers a rollback. (by claude)
+	UpdateRetried bool `json:"updateRetried,omitempty"`
 }
 
 // isZero reports whether the marker has nothing worth persisting. (by claude)
@@ -103,7 +109,7 @@ func (r *reconciler) repairBudgetStore() repairBudgetStore {
 }
 
 // repairThunderdChecksum is the func used to fetch the sha256 the
-// distribution service currently serves for thunderd. A field so tests can
+// distribution service currently serves for thunderd. A var so tests can
 // stub it without a real HTTP server. (by claude)
 var repairThunderdChecksum = fetchThunderdChecksum
 
@@ -140,12 +146,20 @@ func fetchThunderdChecksum(ctx context.Context, artifactBaseURL string) (string,
 }
 
 // repairAttempt sweeps dangling symlinks (B3) and runs action if the budget
-// allows it. Two things reset a spent budget first: a different daemon
-// version, or (checked only once the budget is already spent, so a healthy
-// node never polls for it) a different thunderd checksum served by
-// distribution. Returns whether action ran, separately from its error.
+// allows it.
+//
+// Two things reset a spent budget: a different daemon version, or (checked
+// only once already spent, so a healthy node never polls for it) a
+// different thunderd checksum served by distribution -- unless that
+// checksum already failed a retry round. updateAction, when non-nil, is
+// what a checksum-triggered reset runs instead of action, since `thunder
+// up` never replaces an existing binary. When a round that started that way
+// spends the budget again, rollbackAction (if non-nil) is tried once and
+// the checksum is recorded as failed, so it never resets the budget again.
+//
+// Returns whether action or updateAction ran, separately from any error.
 // (by claude)
-func (r *reconciler) repairAttempt(ctx context.Context, cfg Config, action func(context.Context) error) (bool, error) {
+func (r *reconciler) repairAttempt(ctx context.Context, cfg Config, action, updateAction, rollbackAction func(context.Context) error) (bool, error) {
 	store := r.repairBudgetStore()
 	marker, _, err := store.Load(ctx)
 	if err != nil {
@@ -163,25 +177,33 @@ func (r *reconciler) repairAttempt(ctx context.Context, cfg Config, action func(
 		changed = true
 	}
 
-	if marker.Attempts >= repairAttemptLimit {
+	run := action
+	if marker.Attempts >= repairAttemptLimit && updateAction != nil {
 		if checksum, err := repairThunderdChecksum(ctx, cfg.ArtifactBaseURL); err == nil {
-			if marker.ThunderdChecksum != checksum {
-				if marker.ThunderdChecksum != "" {
-					log.Printf("node %s: distribution serves a new thunderd, retrying repairs", cfg.Node)
-					marker = repairBudgetMarker{DaemonVersion: current}
-				}
-				marker.ThunderdChecksum = checksum
+			haveBaseline := marker.AttemptedChecksum != "" || marker.FailedChecksum != ""
+			isNew := checksum != marker.AttemptedChecksum && checksum != marker.FailedChecksum
+			switch {
+			case isNew && haveBaseline:
+				log.Printf("node %s: distribution serves a new thunderd, retrying repairs", cfg.Node)
+				marker = repairBudgetMarker{DaemonVersion: current, FailedChecksum: marker.FailedChecksum, AttemptedChecksum: checksum, UpdateRetried: true}
+				run = updateAction
+				changed = true
+			case isNew:
+				// First observation this outage: nothing to compare against
+				// yet, so only record a baseline. (by claude)
+				marker.AttemptedChecksum = checksum
 				changed = true
 			}
 		}
-		if marker.Attempts >= repairAttemptLimit {
-			if changed {
-				if err := store.Save(ctx, marker); err != nil {
-					log.Printf("node %s: could not save repair budget marker: %v", cfg.Node, err)
-				}
+	}
+
+	if marker.Attempts >= repairAttemptLimit {
+		if changed {
+			if err := store.Save(ctx, marker); err != nil {
+				log.Printf("node %s: could not save repair budget marker: %v", cfg.Node, err)
 			}
-			return false, nil
 		}
+		return false, nil
 	}
 
 	if err := r.sweepDanglingSymlinks(ctx); err != nil {
@@ -193,8 +215,19 @@ func (r *reconciler) repairAttempt(ctx context.Context, cfg Config, action func(
 		return false, fmt.Errorf("save repair budget marker: %w", err)
 	}
 
-	actionErr := action(ctx)
+	actionErr := run(ctx)
 	if marker.Attempts >= repairAttemptLimit {
+		if marker.UpdateRetried {
+			if rollbackAction != nil {
+				if err := rollbackAction(ctx); err != nil {
+					log.Printf("node %s: thunder update --rollback unavailable: %v", cfg.Node, err)
+				}
+			}
+			marker.FailedChecksum = marker.AttemptedChecksum
+			if err := store.Save(ctx, marker); err != nil {
+				log.Printf("node %s: could not save repair budget marker: %v", cfg.Node, err)
+			}
+		}
 		log.Printf("node %s: giving up on repairing thunderd on this node after %d failed attempts; needs a human",
 			cfg.Node, repairAttemptLimit)
 	}

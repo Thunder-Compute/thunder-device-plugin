@@ -191,7 +191,7 @@ func (r *reconciler) ensureEnrolled(ctx context.Context, cfg Config) error {
 		log.Printf("thunderd unhealthy on node %s after %d check(s); enrolling", cfg.Node, r.unhealthy)
 		attempted, err := r.repairAttempt(ctx, cfg, func(ctx context.Context) error {
 			return r.enroll(ctx, cfg)
-		})
+		}, nil, nil)
 		if err != nil {
 			return err
 		}
@@ -209,7 +209,7 @@ func (r *reconciler) ensureEnrolled(ctx context.Context, cfg Config) error {
 			cfg.Node, r.unhealthy, statusErr)
 		attempted, err := r.repairAttempt(ctx, cfg, func(ctx context.Context) error {
 			return r.reinstallCLI(ctx, cfg)
-		})
+		}, nil, nil)
 		if err != nil {
 			log.Printf("could not reinstall the thunder CLI on node %s: %v", cfg.Node, err)
 			return nil
@@ -224,6 +224,10 @@ func (r *reconciler) ensureEnrolled(ctx context.Context, cfg Config) error {
 		cfg.Node, r.unhealthy)
 	attempted, err := r.repairAttempt(ctx, cfg, func(ctx context.Context) error {
 		return r.restart(ctx, cfg)
+	}, func(ctx context.Context) error {
+		return r.update(ctx, cfg)
+	}, func(ctx context.Context) error {
+		return r.rollbackThunderd(ctx, cfg)
 	})
 	if err != nil {
 		log.Printf("could not restart thunderd on node %s: %v", cfg.Node, err)
@@ -348,6 +352,31 @@ func (r *reconciler) restart(ctx context.Context, cfg Config) error {
 		return fmt.Errorf("run thunder up: %w", err)
 	}
 	log.Printf("thunderd restarted on node %s", cfg.Node)
+	return nil
+}
+
+// update installs the thunderd build distribution currently serves. Unlike
+// restart's `thunder up`, `thunder update` replaces an existing binary, so
+// it is what a checksum-triggered retry runs instead. (by claude)
+func (r *reconciler) update(ctx context.Context, cfg Config) error {
+	command := strings.Join([]string{thunderdTransientEnv, "thunder", "update"}, " ")
+	if err := r.runner.RunShell(ctx, "thunder update", command); err != nil {
+		return fmt.Errorf("run thunder update: %w", err)
+	}
+	log.Printf("thunderd updated on node %s", cfg.Node)
+	return nil
+}
+
+// rollbackThunderd is tried once after an update-triggered retry round
+// itself exhausts the budget. Today's CLI has no --rollback flag, so this
+// normally fails; the caller logs that and gives up anyway -- no retry
+// loop around it. (by claude)
+func (r *reconciler) rollbackThunderd(ctx context.Context, cfg Config) error {
+	command := strings.Join([]string{thunderdTransientEnv, "thunder", "update", "--rollback"}, " ")
+	if err := r.runner.RunShell(ctx, "thunder update rollback", command); err != nil {
+		return fmt.Errorf("run thunder update --rollback: %w", err)
+	}
+	log.Printf("thunderd rolled back on node %s", cfg.Node)
 	return nil
 }
 
