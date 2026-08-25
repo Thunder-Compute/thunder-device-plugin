@@ -182,14 +182,17 @@ func writeHostEnvFile(t *testing.T, hostRoot, token string) {
 
 // writeDanglingThunderdSymlink creates a thunderd.service enable-symlink
 // under hostRoot/base/wantsDir whose target does not exist, the way the
-// sweep is meant to find and remove it. (by claude)
+// sweep is meant to find and remove it. The target is written host-absolute
+// (not hostRoot-prefixed): danglingThunderdSymlinks resolves an absolute
+// target under hostRoot itself (ce67d20), so a target that already carries
+// hostRoot in its text would be resolved twice. (by claude)
 func writeDanglingThunderdSymlink(t *testing.T, hostRoot, base, wantsDir string) {
 	t.Helper()
 	dir := filepath.Join(hostRoot, base, wantsDir)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	target := filepath.Join(hostRoot, base, "thunderd.service.gone")
+	target := filepath.Join(base, "thunderd.service.gone")
 	if err := os.Symlink(target, filepath.Join(dir, "thunderd.service")); err != nil {
 		t.Fatal(err)
 	}
@@ -808,21 +811,46 @@ func TestReconcileSweepIssuesNoCommandsWhenNothingIsDangling(t *testing.T) {
 
 // danglingThunderdSymlinks only returns exact "thunderd.service" entries
 // that are both a symlink and dangling, across all four locations the sweep
-// covers -- a live symlink, a plain file, and an unrelated name are all
-// left alone. (by claude)
+// covers -- a live symlink (absolute or relative target), a plain file, and
+// an unrelated name are all left alone. Absolute and relative targets are
+// resolved differently (ce67d20): an absolute target is resolved under
+// hostRoot, a relative one against the symlink's own directory. (by claude)
 func TestDanglingThunderdSymlinks(t *testing.T) {
 	hostRoot := t.TempDir()
 	writeDanglingThunderdSymlink(t, hostRoot, "/etc/systemd/system", "multi-user.target.wants")
 	writeDanglingThunderdSymlink(t, hostRoot, "/run/systemd/system", "thunderd.service.requires")
 
-	// A live symlink (target exists) must not be touched.
-	liveDir := filepath.Join(hostRoot, "/etc/systemd/system/other.wants")
-	if err := os.MkdirAll(liveDir, 0o755); err != nil {
+	// The unit file every live symlink below points at, either directly or
+	// via "..". Written once under hostRoot, the way it would exist on the
+	// real host at /etc/systemd/system/thunderd.service. (by claude)
+	touch(t, filepath.Join(hostRoot, "/etc/systemd/system/thunderd.service"))
+
+	// A live symlink with an absolute, host-namespace target (not
+	// hostRoot-prefixed) must not be touched.
+	absoluteLiveDir := filepath.Join(hostRoot, "/etc/systemd/system/absolute-live.wants")
+	if err := os.MkdirAll(absoluteLiveDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	liveTarget := filepath.Join(hostRoot, "/etc/systemd/system/thunderd.service")
-	touch(t, liveTarget)
-	if err := os.Symlink(liveTarget, filepath.Join(liveDir, "thunderd.service")); err != nil {
+	if err := os.Symlink("/etc/systemd/system/thunderd.service", filepath.Join(absoluteLiveDir, "thunderd.service")); err != nil {
+		t.Fatal(err)
+	}
+
+	// A live symlink with a relative target must not be touched either.
+	relativeLiveDir := filepath.Join(hostRoot, "/etc/systemd/system/relative-live.wants")
+	if err := os.MkdirAll(relativeLiveDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("../thunderd.service", filepath.Join(relativeLiveDir, "thunderd.service")); err != nil {
+		t.Fatal(err)
+	}
+
+	// A dangling relative target is swept exactly like a dangling absolute
+	// one.
+	relativeDanglingDir := filepath.Join(hostRoot, "/etc/systemd/system/relative-dangling.wants")
+	if err := os.MkdirAll(relativeDanglingDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("../thunderd.service.also-gone", filepath.Join(relativeDanglingDir, "thunderd.service")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -848,6 +876,7 @@ func TestDanglingThunderdSymlinks(t *testing.T) {
 	want := []string{
 		"/etc/systemd/system/multi-user.target.wants/thunderd.service",
 		"/run/systemd/system/thunderd.service.requires/thunderd.service",
+		"/etc/systemd/system/relative-dangling.wants/thunderd.service",
 	}
 	gotSet := map[string]bool{}
 	for _, path := range got {
