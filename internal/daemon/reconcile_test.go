@@ -13,8 +13,6 @@ import (
 	"time"
 
 	thunder "github.com/Thunder-Compute/thunder-sdk"
-
-	"github.com/Thunder-Compute/thunder-device-plugin/internal/version"
 )
 
 // scriptedRunner answers `thunder status --json` from a script, one entry per
@@ -667,7 +665,6 @@ func TestReconcileNeverEnrollsAnEnrolledNodeEvenWhenRestartKeepsFailing(t *testi
 		shellErrs: map[string]error{"thunder up": errors.New("thunder: unknown flag --node-name")},
 	}
 	reconciler, registry := newTestReconciler(t, runner)
-	reconciler.repairBudget = &memoryRepairBudgetStore{}
 	ctx := context.Background()
 
 	// A failing restart is retried, not surfaced as a reconcile failure.
@@ -749,9 +746,9 @@ func TestReconcileSweepsDanglingSymlinksBeforeEveryRepair(t *testing.T) {
 	}
 }
 
-// The repair budget survives the reconciler being recreated, and once spent
-// it gives up entirely until a healthy pass resets it. (by claude)
-func TestReconcileRepairBudgetCapsAttemptsAcrossRestartsAndResetsOnHealth(t *testing.T) {
+// Once the budget is spent the daemon gives up entirely -- no more repair
+// commands of any kind -- until a healthy pass resets it. (by claude)
+func TestReconcileRepairBudgetCapsAttemptsAndResetsOnHealth(t *testing.T) {
 	unhealthy := `{"healthy":false,"service":{"active":"inactive"},"config":{"authTokenConfigured":true}}`
 	statuses := make([]scriptedStatus, 0, repairAttemptLimit+2)
 	for i := 0; i < repairAttemptLimit+1; i++ {
@@ -760,10 +757,7 @@ func TestReconcileRepairBudgetCapsAttemptsAcrossRestartsAndResetsOnHealth(t *tes
 	statuses = append(statuses, scriptedStatus{output: healthyStatus})
 
 	runner := &scriptedRunner{statuses: statuses}
-	budget := &memoryRepairBudgetStore{}
-
 	reconciler, _ := newTestReconciler(t, runner)
-	reconciler.repairBudget = budget
 	ctx := context.Background()
 
 	// Spend the whole budget.
@@ -775,70 +769,27 @@ func TestReconcileRepairBudgetCapsAttemptsAcrossRestartsAndResetsOnHealth(t *tes
 	if got := runner.restartAttempts(); got != repairAttemptLimit {
 		t.Fatalf("restart attempts = %d, want %d", got, repairAttemptLimit)
 	}
-	if budget.marker.Attempts != repairAttemptLimit {
-		t.Fatalf("budget marker attempts = %d, want %d", budget.marker.Attempts, repairAttemptLimit)
+	if !reconciler.repairGivenUp || reconciler.repairAttempts != repairAttemptLimit {
+		t.Fatalf("repair state = attempts=%d givenUp=%t, want %d and given up", reconciler.repairAttempts, reconciler.repairGivenUp, repairAttemptLimit)
 	}
 
-	// A pod restart recreates the reconciler against the same store: no
-	// fresh budget, no further repair of any kind.
-	restarted, _ := newTestReconciler(t, runner)
-	restarted.repairBudget = budget
-	if err := restarted.reconcile(ctx); err != nil {
-		t.Fatalf("pass after recreation: %v", err)
+	// Still spent: no further repair of any kind.
+	if err := reconciler.reconcile(ctx); err != nil {
+		t.Fatalf("pass while spent: %v", err)
 	}
 	if got := runner.restartAttempts(); got != repairAttemptLimit {
-		t.Fatalf("restart attempts after recreation = %d, want %d (budget spent, no retry)", got, repairAttemptLimit)
+		t.Fatalf("restart attempts while spent = %d, want %d (budget spent, no retry)", got, repairAttemptLimit)
 	}
 	if got := runner.enrollments(); got != 0 {
 		t.Fatalf("enrollments = %d, want 0: a spent budget never enrolls", got)
 	}
 
 	// A healthy pass resets the budget for the next outage.
-	if err := restarted.reconcile(ctx); err != nil {
+	if err := reconciler.reconcile(ctx); err != nil {
 		t.Fatalf("healthy pass: %v", err)
 	}
-	if !budget.marker.isZero() {
-		t.Fatalf("repair budget marker = %+v, want cleared after a healthy pass", budget.marker)
-	}
-}
-
-// A spent budget from an old daemon build must not block a new image that
-// may well contain a fix. (by claude)
-func TestReconcileRepairBudgetResetsOnANewDaemonVersion(t *testing.T) {
-	oldVersion := version.Version
-	version.Version = "v1.0.0"
-	t.Cleanup(func() { version.Version = oldVersion })
-
-	unhealthy := `{"healthy":false,"service":{"active":"inactive"},"config":{"authTokenConfigured":true}}`
-	statuses := make([]scriptedStatus, repairAttemptLimit+1)
-	for i := range statuses {
-		statuses[i] = scriptedStatus{output: unhealthy}
-	}
-	runner := &scriptedRunner{statuses: statuses}
-	budget := &memoryRepairBudgetStore{}
-	reconciler, _ := newTestReconciler(t, runner)
-	reconciler.repairBudget = budget
-	ctx := context.Background()
-
-	for i := 0; i < repairAttemptLimit; i++ {
-		if err := reconciler.reconcile(ctx); err != nil {
-			t.Fatalf("pass %d: %v", i, err)
-		}
-	}
-	if got := runner.restartAttempts(); got != repairAttemptLimit {
-		t.Fatalf("restart attempts = %d, want %d", got, repairAttemptLimit)
-	}
-
-	// A new daemon image ships; the budget must not carry over.
-	version.Version = "v1.0.1"
-	if err := reconciler.reconcile(ctx); err != nil {
-		t.Fatalf("pass after version change: %v", err)
-	}
-	if got := runner.restartAttempts(); got != repairAttemptLimit+1 {
-		t.Fatalf("restart attempts after version change = %d, want %d", got, repairAttemptLimit+1)
-	}
-	if budget.marker.Attempts != 1 {
-		t.Fatalf("budget marker attempts = %d, want 1 (reset by the version change)", budget.marker.Attempts)
+	if reconciler.repairGivenUp || reconciler.repairAttempts != 0 {
+		t.Fatalf("repair state after healthy pass = attempts=%d givenUp=%t, want cleared", reconciler.repairAttempts, reconciler.repairGivenUp)
 	}
 }
 
@@ -873,9 +824,7 @@ func TestReconcileRepairBudgetStaysSpentWhenTheChecksumFetchFails(t *testing.T) 
 		statuses[i] = scriptedStatus{output: unhealthy}
 	}
 	runner := &scriptedRunner{statuses: statuses}
-	budget := &memoryRepairBudgetStore{}
 	reconciler, _ := newTestReconciler(t, runner)
-	reconciler.repairBudget = budget
 	ctx := context.Background()
 
 	for i := 0; i < repairAttemptLimit; i++ {
@@ -889,8 +838,8 @@ func TestReconcileRepairBudgetStaysSpentWhenTheChecksumFetchFails(t *testing.T) 
 	if got := runner.restartAttempts(); got != repairAttemptLimit {
 		t.Fatalf("restart attempts = %d, want %d (a fetch error must not reset the budget)", got, repairAttemptLimit)
 	}
-	if budget.marker.AttemptedChecksum != "" {
-		t.Fatalf("checksum stamped despite the fetch failing: %q", budget.marker.AttemptedChecksum)
+	if reconciler.repairAttemptedChecksum != "" {
+		t.Fatalf("checksum stamped despite the fetch failing: %q", reconciler.repairAttemptedChecksum)
 	}
 }
 
@@ -911,9 +860,7 @@ func TestReconcileRepairBudgetChecksumRetryUpdatesRollsBackAndBlacklists(t *test
 		statuses[i] = scriptedStatus{output: unhealthy}
 	}
 	runner := &scriptedRunner{statuses: statuses}
-	budget := &memoryRepairBudgetStore{}
 	reconciler, _ := newTestReconciler(t, runner)
-	reconciler.repairBudget = budget
 	ctx := context.Background()
 
 	// Passes 1-5: an ordinary round of restarts spends the budget.
@@ -957,8 +904,8 @@ func TestReconcileRepairBudgetChecksumRetryUpdatesRollsBackAndBlacklists(t *test
 	if got := runner.rollbackAttempts(); got != 1 {
 		t.Fatalf("rollback attempts = %d, want 1", got)
 	}
-	if budget.marker.FailedChecksum != "csum-2" {
-		t.Fatalf("failed checksum = %q, want csum-2", budget.marker.FailedChecksum)
+	if reconciler.repairFailedChecksum != "csum-2" {
+		t.Fatalf("failed checksum = %q, want csum-2", reconciler.repairFailedChecksum)
 	}
 	restartsAfterRound := runner.restartAttempts()
 
@@ -996,9 +943,7 @@ func TestReconcileRepairBudgetRecordsFailedChecksumEvenWhenRollbackFails(t *test
 		statuses:  statuses,
 		shellErrs: map[string]error{"thunder update --rollback": errors.New("unknown flag --rollback")},
 	}
-	budget := &memoryRepairBudgetStore{}
 	reconciler, _ := newTestReconciler(t, runner)
-	reconciler.repairBudget = budget
 	ctx := context.Background()
 
 	for i := 0; i < repairAttemptLimit; i++ {
@@ -1022,22 +967,7 @@ func TestReconcileRepairBudgetRecordsFailedChecksumEvenWhenRollbackFails(t *test
 	if got := runner.rollbackAttempts(); got != 1 {
 		t.Fatalf("rollback attempts = %d, want 1 (tried once even though it fails)", got)
 	}
-	if budget.marker.FailedChecksum != "csum-2" {
-		t.Fatalf("failed checksum = %q, want csum-2 (recorded despite the rollback failing)", budget.marker.FailedChecksum)
+	if reconciler.repairFailedChecksum != "csum-2" {
+		t.Fatalf("failed checksum = %q, want csum-2 (recorded despite the rollback failing)", reconciler.repairFailedChecksum)
 	}
-}
-
-// memoryRepairBudgetStore is a repairBudgetStore fake a test can share
-// across two reconciler instances, the way a host file would. (by claude)
-type memoryRepairBudgetStore struct {
-	marker repairBudgetMarker
-}
-
-func (s *memoryRepairBudgetStore) Load(context.Context) (repairBudgetMarker, bool, error) {
-	return s.marker, false, nil
-}
-
-func (s *memoryRepairBudgetStore) Save(_ context.Context, marker repairBudgetMarker) error {
-	s.marker = marker
-	return nil
 }
