@@ -3,11 +3,18 @@ package daemon
 import (
 	"context"
 	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	thunder "github.com/Thunder-Compute/thunder-sdk"
+
+	"github.com/Thunder-Compute/thunder-device-plugin/internal/version"
 )
 
 // scriptedRunner answers `thunder status --json` from a script, one entry per
@@ -18,10 +25,13 @@ type scriptedRunner struct {
 	statusHit int
 	nvidia    map[string][]byte
 	// shell holds the commands that succeeded; attempted holds every command
-	// the daemon ran, including the ones shellErr failed.
+	// the daemon ran, including the ones shellErr or shellErrs failed.
 	shell     []string
 	attempted []string
 	shellErr  error
+	// shellErrs fails only RunShell calls whose command contains the key, so
+	// a test can target one specific repair command. (by claude)
+	shellErrs map[string]error
 }
 
 type scriptedStatus struct {
@@ -41,6 +51,11 @@ func (r *scriptedRunner) CombinedOutput(_ context.Context, name string, args ...
 
 func (r *scriptedRunner) RunShell(_ context.Context, _ string, command string) error {
 	r.attempted = append(r.attempted, command)
+	for substr, err := range r.shellErrs {
+		if strings.Contains(command, substr) {
+			return err
+		}
+	}
 	if r.shellErr != nil {
 		return r.shellErr
 	}
@@ -61,7 +76,25 @@ func (r *scriptedRunner) enrollments() int {
 // rather than downloading the CLI and spending an enrollment token on it,
 // including the ones that failed.
 func (r *scriptedRunner) restartAttempts() int {
-	return countCommands(r.attempted, "thunder up")
+	// The trailing space excludes "thunder update", which starts with the
+	// same characters. (by claude)
+	return countCommands(r.attempted, "thunder up ")
+}
+
+// updateAttempts counts `thunder update` retries, excluding rollbacks.
+// (by claude)
+func (r *scriptedRunner) updateAttempts() int {
+	count := 0
+	for _, command := range r.attempted {
+		if strings.Contains(command, "thunder update") && !strings.Contains(command, "--rollback") {
+			count++
+		}
+	}
+	return count
+}
+
+func (r *scriptedRunner) rollbackAttempts() int {
+	return countCommands(r.attempted, "thunder update --rollback")
 }
 
 func countCommands(commands []string, substring string) int {
@@ -119,6 +152,19 @@ func newTestReconciler(t *testing.T, runner *scriptedRunner) (*reconciler, *reco
 }
 
 const healthyStatus = `{"healthy":true,"service":{"active":"active"}}`
+
+// writeHostEnvFile writes thunderd's env file the way thunderd itself
+// would, for hostAuthTokenConfigured to read. (by claude)
+func writeHostEnvFile(t *testing.T, hostRoot, token string) {
+	t.Helper()
+	path := filepath.Join(hostRoot, thunderdEnvPath)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(`THUNDERD_AUTH_TOKEN="`+token+`"`+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
 
 // A node whose thunderd was uninstalled reports exit 127 from `thunder status`.
 // The daemon has to climb out of that without a pod restart.
@@ -201,8 +247,8 @@ func TestReconcileRidesOutATransientRestart(t *testing.T) {
 // with a freshly minted token, because enrollment tokens are single use.
 func TestReconcileRetriesAFailedEnrollmentWithAFreshToken(t *testing.T) {
 	runner := &scriptedRunner{
-		statuses: []scriptedStatus{{output: `{"healthy":false}`}},
-		shellErr: errors.New("installer exited 1"),
+		statuses:  []scriptedStatus{{output: `{"healthy":false}`}},
+		shellErrs: map[string]error{"THUNDER_INSTALL_MODE=thunderd": errors.New("installer exited 1")},
 	}
 	reconciler, registry := newTestReconciler(t, runner)
 	ctx := context.Background()
@@ -211,7 +257,7 @@ func TestReconcileRetriesAFailedEnrollmentWithAFreshToken(t *testing.T) {
 		t.Fatal("reconcile succeeded, want the installer failure surfaced")
 	}
 
-	runner.shellErr = nil
+	runner.shellErrs = nil
 	if err := reconciler.reconcile(ctx); err != nil {
 		t.Fatalf("second reconcile: %v", err)
 	}
@@ -552,7 +598,14 @@ func TestReconcileRestartsAnEnrolledNodeInsteadOfReinstallingIt(t *testing.T) {
 		t.Fatalf("enrollment tokens minted = %d, want 0", got)
 	}
 
-	restart := runner.attempted[0]
+	// The dangling-symlink sweep (B3) runs before any repair command.
+	sweepAt := commandIndex(runner.attempted, "systemctl daemon-reload")
+	restartAt := commandIndex(runner.attempted, "thunder up")
+	if sweepAt == -1 || restartAt == -1 || sweepAt > restartAt {
+		t.Fatalf("sweep did not run before the restart: attempted = %#v", runner.attempted)
+	}
+
+	restart := runner.attempted[restartAt]
 	for _, want := range []string{"THUNDERD_TRANSIENT=1", "thunder up", "--ip '10.0.0.5'", "--zone 'us-west-2a'", "--node-name 'node-a'"} {
 		if !strings.Contains(restart, want) {
 			t.Fatalf("restart command missing %q:\n%s", want, restart)
@@ -563,6 +616,17 @@ func TestReconcileRestartsAnEnrolledNodeInsteadOfReinstallingIt(t *testing.T) {
 	if strings.Contains(restart, "--token") || strings.Contains(restart, "curl") {
 		t.Fatalf("restart command enrolls the node again:\n%s", restart)
 	}
+}
+
+// commandIndex returns the index of the first command containing substring,
+// or -1. (by claude)
+func commandIndex(commands []string, substring string) int {
+	for i, command := range commands {
+		if strings.Contains(command, substring) {
+			return i
+		}
+	}
+	return -1
 }
 
 // A node whose thunderd is not enrolled at all cannot be restarted into
@@ -584,37 +648,6 @@ func TestReconcileEnrollsANodeThatHasNoAuthToken(t *testing.T) {
 	}
 }
 
-// Restarting is the cheap repair, not the only one: a node that will not come
-// back up this way must not be left down forever.
-func TestReconcileReinstallsWhenRestartingKeepsFailing(t *testing.T) {
-	runner := &scriptedRunner{
-		statuses: []scriptedStatus{{output: `{"healthy":false,"service":{"active":"inactive"},"config":{"authTokenConfigured":true}}`}},
-		shellErr: errors.New("thunder: unknown flag --node-name"),
-	}
-	reconciler, _ := newTestReconciler(t, runner)
-	ctx := context.Background()
-
-	// Every pass fails while the node cannot be repaired at all, so the
-	// installer failure is what reconcile reports.
-	for pass := 0; pass < restartRepairLimit+2; pass++ {
-		if err := reconciler.reconcile(ctx); err == nil {
-			t.Fatalf("reconcile pass %d succeeded, want the repair failure surfaced", pass)
-		}
-	}
-	if got := runner.restartAttempts(); got != restartRepairLimit {
-		t.Fatalf("restart attempts = %d, want %d before the daemon gives up on them", got, restartRepairLimit)
-	}
-
-	// The installer works again, and the node recovers through it.
-	runner.shellErr = nil
-	if err := reconciler.reconcile(ctx); err != nil {
-		t.Fatalf("reconcile after the installer recovered: %v", err)
-	}
-	if got := runner.enrollments(); got != 1 {
-		t.Fatalf("enrollments = %d, want 1", got)
-	}
-}
-
 func paths(writes []recordedRequest) []string {
 	values := make([]string, 0, len(writes))
 	for _, write := range writes {
@@ -623,24 +656,388 @@ func paths(writes []recordedRequest) []string {
 	return values
 }
 
-// A restart that runs but leaves thunderd down must not become a loop of its
-// own: the daemon escalates to reinstalling the node.
-func TestReconcileReinstallsWhenRestartingDoesNotHelp(t *testing.T) {
-	runner := &scriptedRunner{statuses: []scriptedStatus{{
-		output: `{"healthy":false,"service":{"active":"inactive"},"config":{"authTokenConfigured":true}}`,
-	}}}
-	reconciler, _ := newTestReconciler(t, runner)
+// Restarting is the only repair for an enrolled node, so a restart that keeps
+// failing is retried -- up to the repair budget -- rather than ever
+// escalating to enroll(): enrolling would mint a fresh token and create a
+// duplicate host row for a node Central already knows about, which is
+// exactly what spammed Central in the 2026-08-24 incident. (by claude)
+func TestReconcileNeverEnrollsAnEnrolledNodeEvenWhenRestartKeepsFailing(t *testing.T) {
+	runner := &scriptedRunner{
+		statuses:  []scriptedStatus{{output: `{"healthy":false,"service":{"active":"inactive"},"config":{"authTokenConfigured":true}}`}},
+		shellErrs: map[string]error{"thunder up": errors.New("thunder: unknown flag --node-name")},
+	}
+	reconciler, registry := newTestReconciler(t, runner)
+	reconciler.repairBudget = &memoryRepairBudgetStore{}
+	ctx := context.Background()
 
-	for pass := 0; pass < restartRepairLimit+1; pass++ {
-		if err := reconciler.reconcile(context.Background()); err != nil {
+	// A failing restart is retried, not surfaced as a reconcile failure.
+	// (by claude)
+	for pass := 0; pass < repairAttemptLimit+2; pass++ {
+		if err := reconciler.reconcile(ctx); err != nil {
 			t.Fatalf("reconcile pass %d: %v", pass, err)
 		}
 	}
+	if got := runner.enrollments(); got != 0 {
+		t.Fatalf("enrollments for a node whose restart keeps failing = %d, want 0", got)
+	}
+	if got := countCommands(paths(registry.writes()), "/api/v1/enrollment-tokens"); got != 0 {
+		t.Fatalf("enrollment tokens minted = %d, want 0", got)
+	}
+	if got := runner.restartAttempts(); got != repairAttemptLimit {
+		t.Fatalf("restart attempts = %d, want %d (the repair budget caps them)", got, repairAttemptLimit)
+	}
+}
 
-	if got := runner.restartAttempts(); got != restartRepairLimit {
-		t.Fatalf("restart attempts = %d, want %d before the daemon reinstalls instead", got, restartRepairLimit)
+// A broken CLI on an already-enrolled node is a CLI problem, not an
+// enrollment problem: reinstall the binaries, spend no token. (by claude)
+func TestReconcileReinstallsTheCLIWithoutATokenWhenAnEnrolledNodesStatusIsUnreadable(t *testing.T) {
+	runner := &scriptedRunner{statuses: []scriptedStatus{
+		{output: healthyStatus},
+		{output: "", err: errors.New("exit status 127: nsenter: failed to execute thunder: No such file or directory")},
+	}}
+	reconciler, registry := newTestReconciler(t, runner)
+	reconciler.cfg.ThunderInstallURL = "https://get.thundercompute.com/install.sh"
+	writeHostEnvFile(t, reconciler.cfg.HostRoot, "tok_existing")
+	ctx := context.Background()
+
+	if err := reconciler.reconcile(ctx); err != nil {
+		t.Fatalf("first reconcile: %v", err)
 	}
-	if got := runner.enrollments(); got != 1 {
-		t.Fatalf("enrollments = %d, want 1", got)
+	for pass := 1; pass < unhealthyReconcileThreshold; pass++ {
+		if err := reconciler.reconcile(ctx); err != nil {
+			t.Fatalf("reconcile during grace window: %v", err)
+		}
+		if got := runner.enrollments(); got != 0 {
+			t.Fatalf("enrollments during grace window = %d, want 0", got)
+		}
 	}
+	if err := reconciler.reconcile(ctx); err != nil {
+		t.Fatalf("reconcile after grace window: %v", err)
+	}
+
+	if got := runner.enrollments(); got != 0 {
+		t.Fatalf("enrollments for a node whose auth token is already on the host = %d, want 0", got)
+	}
+	if got := countCommands(paths(registry.writes()), "/api/v1/enrollment-tokens"); got != 0 {
+		t.Fatalf("enrollment tokens minted = %d, want 0", got)
+	}
+	reinstallAt := commandIndex(runner.attempted, "install.sh")
+	if reinstallAt == -1 {
+		t.Fatalf("the CLI was never reinstalled; commands = %#v", runner.attempted)
+	}
+	reinstall := runner.attempted[reinstallAt]
+	if strings.Contains(reinstall, "THUNDER_ENROLLMENT_TOKEN") || strings.Contains(reinstall, "THUNDER_INSTALL_MODE") {
+		t.Fatalf("CLI reinstall command spends an enrollment token:\n%s", reinstall)
+	}
+}
+
+// The symlink sweep (B3) runs before every repair, not only when a
+// dangling symlink happens to be present. (by claude)
+func TestReconcileSweepsDanglingSymlinksBeforeEveryRepair(t *testing.T) {
+	runner := &scriptedRunner{statuses: []scriptedStatus{{
+		output: `{"healthy":false,"service":{"active":"inactive"},"config":{"authTokenConfigured":false}}`,
+	}}}
+	reconciler, _ := newTestReconciler(t, runner)
+
+	if err := reconciler.reconcile(context.Background()); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	sweepAt := commandIndex(runner.attempted, "systemctl daemon-reload")
+	enrollAt := commandIndex(runner.attempted, "THUNDER_INSTALL_MODE=thunderd")
+	if sweepAt == -1 || enrollAt == -1 || sweepAt > enrollAt {
+		t.Fatalf("sweep did not run before enroll: attempted = %#v", runner.attempted)
+	}
+}
+
+// The repair budget survives the reconciler being recreated, and once spent
+// it gives up entirely until a healthy pass resets it. (by claude)
+func TestReconcileRepairBudgetCapsAttemptsAcrossRestartsAndResetsOnHealth(t *testing.T) {
+	unhealthy := `{"healthy":false,"service":{"active":"inactive"},"config":{"authTokenConfigured":true}}`
+	statuses := make([]scriptedStatus, 0, repairAttemptLimit+2)
+	for i := 0; i < repairAttemptLimit+1; i++ {
+		statuses = append(statuses, scriptedStatus{output: unhealthy})
+	}
+	statuses = append(statuses, scriptedStatus{output: healthyStatus})
+
+	runner := &scriptedRunner{statuses: statuses}
+	budget := &memoryRepairBudgetStore{}
+
+	reconciler, _ := newTestReconciler(t, runner)
+	reconciler.repairBudget = budget
+	ctx := context.Background()
+
+	// Spend the whole budget.
+	for i := 0; i < repairAttemptLimit; i++ {
+		if err := reconciler.reconcile(ctx); err != nil {
+			t.Fatalf("pass %d: %v", i, err)
+		}
+	}
+	if got := runner.restartAttempts(); got != repairAttemptLimit {
+		t.Fatalf("restart attempts = %d, want %d", got, repairAttemptLimit)
+	}
+	if budget.marker.Attempts != repairAttemptLimit {
+		t.Fatalf("budget marker attempts = %d, want %d", budget.marker.Attempts, repairAttemptLimit)
+	}
+
+	// A pod restart recreates the reconciler against the same store: no
+	// fresh budget, no further repair of any kind.
+	restarted, _ := newTestReconciler(t, runner)
+	restarted.repairBudget = budget
+	if err := restarted.reconcile(ctx); err != nil {
+		t.Fatalf("pass after recreation: %v", err)
+	}
+	if got := runner.restartAttempts(); got != repairAttemptLimit {
+		t.Fatalf("restart attempts after recreation = %d, want %d (budget spent, no retry)", got, repairAttemptLimit)
+	}
+	if got := runner.enrollments(); got != 0 {
+		t.Fatalf("enrollments = %d, want 0: a spent budget never enrolls", got)
+	}
+
+	// A healthy pass resets the budget for the next outage.
+	if err := restarted.reconcile(ctx); err != nil {
+		t.Fatalf("healthy pass: %v", err)
+	}
+	if !budget.marker.isZero() {
+		t.Fatalf("repair budget marker = %+v, want cleared after a healthy pass", budget.marker)
+	}
+}
+
+// A spent budget from an old daemon build must not block a new image that
+// may well contain a fix. (by claude)
+func TestReconcileRepairBudgetResetsOnANewDaemonVersion(t *testing.T) {
+	oldVersion := version.Version
+	version.Version = "v1.0.0"
+	t.Cleanup(func() { version.Version = oldVersion })
+
+	unhealthy := `{"healthy":false,"service":{"active":"inactive"},"config":{"authTokenConfigured":true}}`
+	statuses := make([]scriptedStatus, repairAttemptLimit+1)
+	for i := range statuses {
+		statuses[i] = scriptedStatus{output: unhealthy}
+	}
+	runner := &scriptedRunner{statuses: statuses}
+	budget := &memoryRepairBudgetStore{}
+	reconciler, _ := newTestReconciler(t, runner)
+	reconciler.repairBudget = budget
+	ctx := context.Background()
+
+	for i := 0; i < repairAttemptLimit; i++ {
+		if err := reconciler.reconcile(ctx); err != nil {
+			t.Fatalf("pass %d: %v", i, err)
+		}
+	}
+	if got := runner.restartAttempts(); got != repairAttemptLimit {
+		t.Fatalf("restart attempts = %d, want %d", got, repairAttemptLimit)
+	}
+
+	// A new daemon image ships; the budget must not carry over.
+	version.Version = "v1.0.1"
+	if err := reconciler.reconcile(ctx); err != nil {
+		t.Fatalf("pass after version change: %v", err)
+	}
+	if got := runner.restartAttempts(); got != repairAttemptLimit+1 {
+		t.Fatalf("restart attempts after version change = %d, want %d", got, repairAttemptLimit+1)
+	}
+	if budget.marker.Attempts != 1 {
+		t.Fatalf("budget marker attempts = %d, want 1 (reset by the version change)", budget.marker.Attempts)
+	}
+}
+
+// fetchThunderdChecksum reads the thunderd line out of a real
+// sha256sums.txt response. (by claude)
+func TestFetchThunderdChecksumParsesTheThunderdLine(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "aaaa  install.sh\nbbbb  thunderd\ncccc  thunder\n")
+	}))
+	defer server.Close()
+
+	checksum, err := fetchThunderdChecksum(context.Background(), server.URL)
+	if err != nil {
+		t.Fatalf("fetchThunderdChecksum: %v", err)
+	}
+	if checksum != "bbbb" {
+		t.Fatalf("checksum = %q, want bbbb", checksum)
+	}
+}
+
+// A checksum fetch failure must not reset the budget. (by claude)
+func TestReconcileRepairBudgetStaysSpentWhenTheChecksumFetchFails(t *testing.T) {
+	restore := repairThunderdChecksum
+	t.Cleanup(func() { repairThunderdChecksum = restore })
+	repairThunderdChecksum = func(context.Context, string) (string, error) {
+		return "", errors.New("distribution unreachable")
+	}
+
+	unhealthy := `{"healthy":false,"service":{"active":"inactive"},"config":{"authTokenConfigured":true}}`
+	statuses := make([]scriptedStatus, repairAttemptLimit+1)
+	for i := range statuses {
+		statuses[i] = scriptedStatus{output: unhealthy}
+	}
+	runner := &scriptedRunner{statuses: statuses}
+	budget := &memoryRepairBudgetStore{}
+	reconciler, _ := newTestReconciler(t, runner)
+	reconciler.repairBudget = budget
+	ctx := context.Background()
+
+	for i := 0; i < repairAttemptLimit; i++ {
+		if err := reconciler.reconcile(ctx); err != nil {
+			t.Fatalf("pass %d: %v", i, err)
+		}
+	}
+	if err := reconciler.reconcile(ctx); err != nil {
+		t.Fatalf("pass after budget spent: %v", err)
+	}
+	if got := runner.restartAttempts(); got != repairAttemptLimit {
+		t.Fatalf("restart attempts = %d, want %d (a fetch error must not reset the budget)", got, repairAttemptLimit)
+	}
+	if budget.marker.AttemptedChecksum != "" {
+		t.Fatalf("checksum stamped despite the fetch failing: %q", budget.marker.AttemptedChecksum)
+	}
+}
+
+// The full checksum-retry lifecycle: a new thunderd resets the spent budget
+// and is retried with `thunder update` (never `thunder up`, which cannot
+// install it); if that round also spends the budget, a rollback is tried
+// once and the checksum is blacklisted so it never resets the budget again.
+// (by claude)
+func TestReconcileRepairBudgetChecksumRetryUpdatesRollsBackAndBlacklists(t *testing.T) {
+	restore := repairThunderdChecksum
+	t.Cleanup(func() { repairThunderdChecksum = restore })
+	checksum := "csum-1"
+	repairThunderdChecksum = func(context.Context, string) (string, error) { return checksum, nil }
+
+	unhealthy := `{"healthy":false,"service":{"active":"inactive"},"config":{"authTokenConfigured":true}}`
+	statuses := make([]scriptedStatus, 12)
+	for i := range statuses {
+		statuses[i] = scriptedStatus{output: unhealthy}
+	}
+	runner := &scriptedRunner{statuses: statuses}
+	budget := &memoryRepairBudgetStore{}
+	reconciler, _ := newTestReconciler(t, runner)
+	reconciler.repairBudget = budget
+	ctx := context.Background()
+
+	// Passes 1-5: an ordinary round of restarts spends the budget.
+	for i := 0; i < repairAttemptLimit; i++ {
+		if err := reconciler.reconcile(ctx); err != nil {
+			t.Fatalf("pass %d: %v", i, err)
+		}
+	}
+	if got := runner.restartAttempts(); got != repairAttemptLimit {
+		t.Fatalf("restart attempts = %d, want %d", got, repairAttemptLimit)
+	}
+
+	// Pass 6: first observation while spent -- stamped, not reset.
+	if err := reconciler.reconcile(ctx); err != nil {
+		t.Fatalf("pass 6: %v", err)
+	}
+	if got := runner.restartAttempts(); got != repairAttemptLimit {
+		t.Fatalf("restart attempts after first observation = %d, want %d", got, repairAttemptLimit)
+	}
+
+	// Pass 7: distribution serves a new thunderd -- reset, retry with
+	// `thunder update`, not `thunder up`.
+	checksum = "csum-2"
+	if err := reconciler.reconcile(ctx); err != nil {
+		t.Fatalf("pass 7: %v", err)
+	}
+	if got := runner.updateAttempts(); got != 1 {
+		t.Fatalf("update attempts = %d, want 1", got)
+	}
+	if got := runner.restartAttempts(); got != repairAttemptLimit {
+		t.Fatalf("restart attempts must not grow on the update-retry pass = %d, want %d", got, repairAttemptLimit)
+	}
+
+	// Passes 8-11: the round continues with ordinary restarts and spends the
+	// budget again -- a rollback is tried exactly once.
+	for i := 0; i < repairAttemptLimit-1; i++ {
+		if err := reconciler.reconcile(ctx); err != nil {
+			t.Fatalf("round pass %d: %v", i, err)
+		}
+	}
+	if got := runner.rollbackAttempts(); got != 1 {
+		t.Fatalf("rollback attempts = %d, want 1", got)
+	}
+	if budget.marker.FailedChecksum != "csum-2" {
+		t.Fatalf("failed checksum = %q, want csum-2", budget.marker.FailedChecksum)
+	}
+	restartsAfterRound := runner.restartAttempts()
+
+	// Pass 12: distribution still serves the failed checksum -- it must
+	// never trigger a second reset.
+	if err := reconciler.reconcile(ctx); err != nil {
+		t.Fatalf("pass 12: %v", err)
+	}
+	if got := runner.restartAttempts(); got != restartsAfterRound {
+		t.Fatalf("restart attempts after the failed checksum = %d, want %d (no second reset)", got, restartsAfterRound)
+	}
+	if got := runner.updateAttempts(); got != 1 {
+		t.Fatalf("update attempts after the failed checksum = %d, want 1 (no retry)", got)
+	}
+	if got := runner.rollbackAttempts(); got != 1 {
+		t.Fatalf("rollback attempts after the failed checksum = %d, want 1 (no retry)", got)
+	}
+}
+
+// Today's CLI has no --rollback flag, so the rollback command fails; the
+// checksum must still be blacklisted and the daemon must still give up.
+// (by claude)
+func TestReconcileRepairBudgetRecordsFailedChecksumEvenWhenRollbackFails(t *testing.T) {
+	restore := repairThunderdChecksum
+	t.Cleanup(func() { repairThunderdChecksum = restore })
+	checksum := "csum-1"
+	repairThunderdChecksum = func(context.Context, string) (string, error) { return checksum, nil }
+
+	unhealthy := `{"healthy":false,"service":{"active":"inactive"},"config":{"authTokenConfigured":true}}`
+	statuses := make([]scriptedStatus, 11)
+	for i := range statuses {
+		statuses[i] = scriptedStatus{output: unhealthy}
+	}
+	runner := &scriptedRunner{
+		statuses:  statuses,
+		shellErrs: map[string]error{"thunder update --rollback": errors.New("unknown flag --rollback")},
+	}
+	budget := &memoryRepairBudgetStore{}
+	reconciler, _ := newTestReconciler(t, runner)
+	reconciler.repairBudget = budget
+	ctx := context.Background()
+
+	for i := 0; i < repairAttemptLimit; i++ {
+		if err := reconciler.reconcile(ctx); err != nil {
+			t.Fatalf("pass %d: %v", i, err)
+		}
+	}
+	if err := reconciler.reconcile(ctx); err != nil { // stamp
+		t.Fatalf("stamp pass: %v", err)
+	}
+	checksum = "csum-2"
+	if err := reconciler.reconcile(ctx); err != nil { // update retry
+		t.Fatalf("update retry pass: %v", err)
+	}
+	for i := 0; i < repairAttemptLimit-1; i++ {
+		if err := reconciler.reconcile(ctx); err != nil {
+			t.Fatalf("round pass %d: %v", i, err)
+		}
+	}
+
+	if got := runner.rollbackAttempts(); got != 1 {
+		t.Fatalf("rollback attempts = %d, want 1 (tried once even though it fails)", got)
+	}
+	if budget.marker.FailedChecksum != "csum-2" {
+		t.Fatalf("failed checksum = %q, want csum-2 (recorded despite the rollback failing)", budget.marker.FailedChecksum)
+	}
+}
+
+// memoryRepairBudgetStore is a repairBudgetStore fake a test can share
+// across two reconciler instances, the way a host file would. (by claude)
+type memoryRepairBudgetStore struct {
+	marker repairBudgetMarker
+}
+
+func (s *memoryRepairBudgetStore) Load(context.Context) (repairBudgetMarker, bool, error) {
+	return s.marker, false, nil
+}
+
+func (s *memoryRepairBudgetStore) Save(_ context.Context, marker repairBudgetMarker) error {
+	s.marker = marker
+	return nil
 }
