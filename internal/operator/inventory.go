@@ -69,7 +69,10 @@ func buildDesiredPools(ctx context.Context, inventory ThunderAPI, logger *slog.L
 			return nil, fmt.Errorf("list thunder servers in zone %q: %w", zoneID, err)
 		}
 		for _, server := range servers {
-			if !nodeHealthy(server.Status) {
+			// Cordon is independent of reported health: a healthy cordoned host
+			// must not contribute capacity for new claims. Live clients below
+			// remain the floor, so removing host capacity never drains them.
+			if !nodeHealthy(server.Status) || server.Configurations.Cordoned {
 				continue
 			}
 			addGPUCount(hostCounts, server.GPUType, int64(server.GPUCount))
