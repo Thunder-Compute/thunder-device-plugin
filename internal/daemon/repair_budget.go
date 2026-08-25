@@ -6,27 +6,30 @@ import (
 	"fmt"
 	"log"
 	"strings"
+
+	"github.com/Thunder-Compute/thunder-device-plugin/internal/version"
 )
 
 const (
 	repairBudgetMarkerPath = "/var/lib/thunder/repair-budget.json"
 
-	// repairAttemptLimit is how many repair attempts (restart, CLI reinstall,
-	// or enroll -- whichever this outage needed) the daemon makes before it
-	// gives up entirely. Persisted so a pod restart mid-outage does not
-	// re-arm the budget and repeat the mint-a-token-every-pass loop the
-	// 2026-08-24 incident produced. (by claude)
+	// repairAttemptLimit is how many repair attempts the daemon makes before
+	// giving up entirely for this outage. Persisted so a pod restart
+	// mid-outage does not re-arm it. (by claude)
 	repairAttemptLimit = 5
 
 	repairBudgetMarkerAbsentSentinel = "THUNDER_REPAIR_BUDGET_MARKER_ABSENT"
 )
 
 // repairBudgetMarker is the durable state behind the per-outage repair
-// budget. It is written to the host, not kept only in the pod, so recreating
-// the reconciler -- a pod restart or rollout -- does not reset it
+// budget, written to the host so recreating the reconciler doesn't reset it
 // mid-outage. (by claude)
 type repairBudgetMarker struct {
 	Attempts int `json:"attempts"`
+	// DaemonVersion is the daemon build that last wrote this marker. A
+	// mismatch means a new image shipped, so the old budget is discarded.
+	// (by claude)
+	DaemonVersion string `json:"daemonVersion,omitempty"`
 }
 
 // isZero reports whether the marker has nothing worth persisting. (by claude)
@@ -39,11 +42,10 @@ type repairBudgetStore interface {
 	Save(context.Context, repairBudgetMarker) error
 }
 
-// hostRepairBudgetStore persists the marker on the host as a small JSON file,
-// written atomically (temp file + rename) the same way the daemon writes any
-// other host state. It is its own file rather than sharing one with some
-// other marker, so clearing it can never have side effects on unrelated
-// state. (by claude)
+// hostRepairBudgetStore persists the marker on the host as a small JSON
+// file, written atomically (temp file + rename). Its own file, separate from
+// any other marker, so clearing it has no side effects on unrelated state.
+// (by claude)
 type hostRepairBudgetStore struct{ runner commandRunner }
 
 func (s hostRepairBudgetStore) Load(ctx context.Context) (repairBudgetMarker, bool, error) {
@@ -57,9 +59,8 @@ func (s hostRepairBudgetStore) Load(ctx context.Context) (repairBudgetMarker, bo
 	}
 	var marker repairBudgetMarker
 	if err := json.Unmarshal(output, &marker); err != nil {
-		// A marker that cannot be parsed is treated as absent rather than as a
-		// read failure: starting the budget over is safe, refusing to repair
-		// because of a corrupt marker is not. (by claude)
+		// Unparseable is treated as absent: starting over is safe, refusing
+		// to repair over a corrupt marker is not. (by claude)
 		return repairBudgetMarker{}, true, nil
 	}
 	return marker, false, nil
@@ -91,24 +92,22 @@ func (r *reconciler) repairBudgetStore() repairBudgetStore {
 	return r.repairBudget
 }
 
-// repairAttempt gates a repair action behind the durable per-outage budget:
-// it sweeps dangling thunderd enable-symlinks (B3) and then runs action, but
-// only if fewer than repairAttemptLimit attempts have been made this outage.
-// Once the limit is reached the daemon stops repairing entirely -- no more
-// restarts, CLI reinstalls, or enrolls -- until the node reports healthy and
-// the budget resets; a stuck node past the limit needs a human, not another
-// attempt of any kind.
-//
-// It returns whether action actually ran, separately from any error action
-// returned, so a caller can tell "the repair failed" from "the budget said
-// not to try" -- the two must not be confused when deciding whether to reset
-// the unhealthy counters. (by claude)
+// repairAttempt sweeps dangling symlinks (B3) and runs action if the budget
+// allows it, discarding a marker from a different daemon version first.
+// Returns whether action ran, separately from its error. (by claude)
 func (r *reconciler) repairAttempt(ctx context.Context, cfg Config, action func(context.Context) error) (bool, error) {
 	store := r.repairBudgetStore()
 	marker, _, err := store.Load(ctx)
 	if err != nil {
 		return false, fmt.Errorf("load repair budget marker: %w", err)
 	}
+
+	current := version.Get()
+	if marker.DaemonVersion != "" && marker.DaemonVersion != current {
+		log.Printf("node %s: new daemon version, retrying repairs", cfg.Node)
+		marker = repairBudgetMarker{}
+	}
+	marker.DaemonVersion = current
 
 	if marker.Attempts >= repairAttemptLimit {
 		return false, nil
@@ -131,9 +130,8 @@ func (r *reconciler) repairAttempt(ctx context.Context, cfg Config, action func(
 	return true, actionErr
 }
 
-// resetRepairBudget clears the durable budget once the node is healthy again,
-// so the next outage gets the full attempt count rather than inheriting
-// whatever was left over from this one. (by claude)
+// resetRepairBudget clears the durable budget once the node is healthy
+// again, so the next outage gets the full attempt count. (by claude)
 func (r *reconciler) resetRepairBudget(ctx context.Context, cfg Config) {
 	store := r.repairBudgetStore()
 	marker, _, err := store.Load(ctx)

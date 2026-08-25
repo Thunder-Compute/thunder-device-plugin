@@ -146,12 +146,8 @@ func (r *reconciler) reconcile(ctx context.Context) error {
 }
 
 // ensureEnrolled brings thunderd back to healthy on the host when it is not.
-//
-// Once a node is enrolled, this never re-enrolls it: enroll() mints a
-// single-use token and creates a new host row in Central every time it runs,
-// and a repair loop that reached it on every unhealthy pass is what spammed
-// both in the 2026-08-24 incident. enroll() is reserved for a node that has
-// never been enrolled at all.
+// Once enrolled, a node is never re-enrolled: enroll() is reserved for a
+// node that has never been enrolled at all. (by claude)
 func (r *reconciler) ensureEnrolled(ctx context.Context, cfg Config) error {
 	status, statusErr := getThunderStatus(ctx, r.runner)
 	r.logStatus(cfg, status, statusErr)
@@ -205,11 +201,9 @@ func (r *reconciler) ensureEnrolled(ctx context.Context, cfg Config) error {
 		return nil
 	}
 
-	// Enrolled. `thunder status` itself not answering is a CLI problem,
-	// repaired by reinstalling the CLI (no token spent, and none of this
-	// node's existing enrollment touched); a CLI that answered but left
-	// thunderd down just needs a restart. Neither ever falls through to
-	// enroll(), no matter how many times it is tried.
+	// Enrolled: a CLI that won't even answer is reinstalled (no token
+	// spent); one that answered but left thunderd down is restarted.
+	// Neither ever falls through to enroll(). (by claude)
 	if statusErr != nil {
 		log.Printf("thunder status unavailable on enrolled node %s after %d check(s) (%v); reinstalling the CLI without an enrollment token",
 			cfg.Node, r.unhealthy, statusErr)
@@ -236,30 +230,19 @@ func (r *reconciler) ensureEnrolled(ctx context.Context, cfg Config) error {
 		return nil
 	}
 	if attempted {
-		// Health is confirmed by the next pass rather than assumed here. A
-		// restart that ran but did not fix the node is why the attempts are
-		// counted rather than only the failures.
+		// Confirmed healthy on the next pass, not assumed here. (by claude)
 		r.unhealthy, r.transitional = 0, 0
 	}
 	return nil
 }
 
-// thunderdEnvPath is the fixed location thunderd's own env file lives at on
-// every node -- not configurable, so the daemon does not need to discover
-// it. (by claude)
+// thunderdEnvPath is thunderd's fixed env file location on every node. (by claude)
 const thunderdEnvPath = "/etc/thunder/thunderd.env"
 
-// nodeEnrolled reports whether this node already holds a Thunder auth token.
-// `thunder status`'s own answer is trusted whenever it has one: its
-// AuthTokenConfigured field is exactly this question, already answered.
-// It is not trusted when status could not even run, or when it ran but
-// reports it could not read its own env file (Config.Error set, so a false
-// AuthTokenConfigured only means "could not check", not "no token") -- an
-// unreadable env file must never look like an unenrolled node, or every
-// enrolled node with a flaky status read would be enrolled again on top of
-// itself. For that case the daemon checks the ground truth directly: the
-// fixed env file thunderd itself writes the token to, read through the
-// daemon's own read-only /host mount. (by claude)
+// nodeEnrolled trusts thunder status's own AuthTokenConfigured when it has an
+// answer; otherwise (status unreadable, or it ran but couldn't read its own
+// env file) it reads the ground truth from the host env file directly.
+// (by claude)
 func (r *reconciler) nodeEnrolled(cfg Config, status thunderStatus, statusErr error) bool {
 	if statusErr == nil && (status.enrolled() || status.Config.Error == "") {
 		return status.enrolled()
@@ -267,12 +250,9 @@ func (r *reconciler) nodeEnrolled(cfg Config, status thunderStatus, statusErr er
 	return hostAuthTokenConfigured(cfg)
 }
 
-// hostAuthTokenConfigured reads thunderd's env file directly and reports
-// whether THUNDERD_AUTH_TOKEN is set. Any failure to read or parse it -- the
-// file absent, the mount unavailable -- is treated as "not enrolled": enroll()
-// still has to pass its own NVIDIA checks before it does anything to Central,
-// so a broken /host mount fails there first rather than repeatedly enrolling
-// a node whose token this daemon simply could not see. (by claude)
+// hostAuthTokenConfigured reads THUNDERD_AUTH_TOKEN from thunderd's env file
+// via the host mount. Any read or parse failure counts as "not enrolled".
+// (by claude)
 func hostAuthTokenConfigured(cfg Config) bool {
 	data, err := os.ReadFile(resolveNodePath(cfg.HostRoot, thunderdEnvPath))
 	if err != nil {
@@ -281,11 +261,8 @@ func hostAuthTokenConfigured(cfg Config) bool {
 	return envValue(string(data), "THUNDERD_AUTH_TOKEN") != ""
 }
 
-// envValue reads one KEY=VALUE line from a systemd EnvironmentFile-style
-// file. It only has to tell empty from non-empty, so it does not need to
-// handle backslash escaping: a value that keeps a stray quote because of an
-// escaped character inside still trims down to something non-empty.
-// (by claude)
+// envValue reads one KEY=VALUE line. It only needs empty vs. non-empty, so
+// it skips backslash-escape handling. (by claude)
 func envValue(env, key string) string {
 	for _, line := range strings.Split(env, "\n") {
 		name, value, found := strings.Cut(strings.TrimSpace(line), "=")
@@ -301,14 +278,9 @@ func envValue(env, key string) string {
 	return ""
 }
 
-// reinstallCLI repairs a node whose `thunder status` will not run by
-// re-fetching install.sh and running it with none of the automated-setup
-// variables set, so it only installs the thunder and uninstall-thunder.sh
-// binaries and never reaches the token-gated `thunder up` step. install.sh,
-// thunder, and uninstall-thunder.sh are anonymous artifacts on the
-// distribution service: this spends no enrollment token, unlike enroll(). The
-// next pass then finds the CLI answering and repairs the node with the
-// ordinary token-less restart. (by claude)
+// reinstallCLI re-fetches install.sh with none of the automated-setup
+// variables set, so it only installs the CLI binaries -- no enrollment
+// token spent, unlike enroll(). (by claude)
 func (r *reconciler) reinstallCLI(ctx context.Context, cfg Config) error {
 	command := fmt.Sprintf("curl -fsSL %s | sudo sh", shellQuote(cfg.ThunderInstallURL))
 	if err := r.runner.RunShell(ctx, "thunder cli reinstall", command); err != nil {
@@ -318,14 +290,9 @@ func (r *reconciler) reinstallCLI(ctx context.Context, cfg Config) error {
 	return nil
 }
 
-// sweepDanglingSymlinksCommand removes stale thunderd.service enable-symlinks
-// from the host before any repair. It is the same class of leftover
-// reference that kept a stopped transient unit loaded in the 2026-08-24
-// incident (change set A's A1/A3 in the companion thundernetes change),
-// reached here too so a node whose installed thunder CLI predates that fix is
-// still protected. Only an exact "thunderd.service" entry that is a symlink
-// AND whose target no longer exists is removed -- never a broad name-pattern
-// match, which could catch a live alias. (by claude)
+// sweepDanglingSymlinksCommand removes an exact "thunderd.service" entry that
+// is a symlink whose target no longer exists -- never a broad pattern match,
+// which could catch a live alias. (by claude)
 const sweepDanglingSymlinksCommand = `set -eu
 removed=0
 for link in /etc/systemd/system/*.wants/thunderd.service /etc/systemd/system/*.requires/thunderd.service /run/systemd/system/*.wants/thunderd.service /run/systemd/system/*.requires/thunderd.service; do

@@ -10,6 +10,8 @@ import (
 	"time"
 
 	thunder "github.com/Thunder-Compute/thunder-sdk"
+
+	"github.com/Thunder-Compute/thunder-device-plugin/internal/version"
 )
 
 // scriptedRunner answers `thunder status --json` from a script, one entry per
@@ -24,10 +26,8 @@ type scriptedRunner struct {
 	shell     []string
 	attempted []string
 	shellErr  error
-	// shellErrs fails only the RunShell calls whose command contains the key,
-	// so a test can fail one specific repair command (e.g. "thunder up")
-	// without also failing the symlink sweep or repair-budget marker writes
-	// that now run alongside every repair. (by claude)
+	// shellErrs fails only RunShell calls whose command contains the key, so
+	// a test can target one specific repair command. (by claude)
 	shellErrs map[string]error
 }
 
@@ -132,9 +132,8 @@ func newTestReconciler(t *testing.T, runner *scriptedRunner) (*reconciler, *reco
 
 const healthyStatus = `{"healthy":true,"service":{"active":"active"}}`
 
-// writeHostEnvFile writes thunderd's env file under hostRoot the way
-// thunderd itself would, so hostAuthTokenConfigured's ground-truth read finds
-// it. (by claude)
+// writeHostEnvFile writes thunderd's env file the way thunderd itself
+// would, for hostAuthTokenConfigured to read. (by claude)
 func writeHostEnvFile(t *testing.T, hostRoot, token string) {
 	t.Helper()
 	path := filepath.Join(hostRoot, thunderdEnvPath)
@@ -650,8 +649,8 @@ func TestReconcileNeverEnrollsAnEnrolledNodeEvenWhenRestartKeepsFailing(t *testi
 	reconciler.repairBudget = &memoryRepairBudgetStore{}
 	ctx := context.Background()
 
-	// A failing restart is logged and retried, not surfaced as a reconcile
-	// failure: only the genuinely-unenrolled enroll() path does that.
+	// A failing restart is retried, not surfaced as a reconcile failure.
+	// (by claude)
 	for pass := 0; pass < repairAttemptLimit+2; pass++ {
 		if err := reconciler.reconcile(ctx); err != nil {
 			t.Fatalf("reconcile pass %d: %v", pass, err)
@@ -668,11 +667,8 @@ func TestReconcileNeverEnrollsAnEnrolledNodeEvenWhenRestartKeepsFailing(t *testi
 	}
 }
 
-// A missing or broken thunder CLI on an already-enrolled node is a CLI
-// problem, not an enrollment problem: it is repaired by reinstalling the
-// CLI binaries without spending an enrollment token, using the auth token
-// this daemon reads directly from the host env file because `thunder status`
-// itself cannot answer. (by claude)
+// A broken CLI on an already-enrolled node is a CLI problem, not an
+// enrollment problem: reinstall the binaries, spend no token. (by claude)
 func TestReconcileReinstallsTheCLIWithoutATokenWhenAnEnrolledNodesStatusIsUnreadable(t *testing.T) {
 	runner := &scriptedRunner{statuses: []scriptedStatus{
 		{output: healthyStatus},
@@ -714,9 +710,8 @@ func TestReconcileReinstallsTheCLIWithoutATokenWhenAnEnrolledNodesStatusIsUnread
 	}
 }
 
-// The daemon does not know in advance whether a repair is actually needed, so
-// it sweeps dangling thunderd.service enable-symlinks before every repair
-// command, not only when one happens to be present (B3). (by claude)
+// The symlink sweep (B3) runs before every repair, not only when a
+// dangling symlink happens to be present. (by claude)
 func TestReconcileSweepsDanglingSymlinksBeforeEveryRepair(t *testing.T) {
 	runner := &scriptedRunner{statuses: []scriptedStatus{{
 		output: `{"healthy":false,"service":{"active":"inactive"},"config":{"authTokenConfigured":false}}`,
@@ -733,13 +728,8 @@ func TestReconcileSweepsDanglingSymlinksBeforeEveryRepair(t *testing.T) {
 	}
 }
 
-// The per-outage repair budget is persisted through the marker store, not
-// held only in memory, so it survives the reconciler being recreated (a pod
-// restart or rollout) mid-outage: an in-memory counter would silently re-arm
-// the loop and repeat the mint-a-token-every-pass spam from 2026-08-24. Once
-// the budget is spent the daemon gives up entirely -- no more repair
-// commands of any kind, ever, for this outage; a healthy pass clears the
-// budget for the next one. (by claude)
+// The repair budget survives the reconciler being recreated, and once spent
+// it gives up entirely until a healthy pass resets it. (by claude)
 func TestReconcileRepairBudgetCapsAttemptsAcrossRestartsAndResetsOnHealth(t *testing.T) {
 	unhealthy := `{"healthy":false,"service":{"active":"inactive"},"config":{"authTokenConfigured":true}}`
 	statuses := make([]scriptedStatus, 0, repairAttemptLimit+2)
@@ -768,9 +758,8 @@ func TestReconcileRepairBudgetCapsAttemptsAcrossRestartsAndResetsOnHealth(t *tes
 		t.Fatalf("budget marker attempts = %d, want %d", budget.marker.Attempts, repairAttemptLimit)
 	}
 
-	// Recreate the reconciler, as a pod restart would, against the same
-	// backing store: it must not get a fresh budget, and no further repair
-	// of any kind is attempted.
+	// A pod restart recreates the reconciler against the same store: no
+	// fresh budget, no further repair of any kind.
 	restarted, _ := newTestReconciler(t, runner)
 	restarted.repairBudget = budget
 	if err := restarted.reconcile(ctx); err != nil {
@@ -783,8 +772,7 @@ func TestReconcileRepairBudgetCapsAttemptsAcrossRestartsAndResetsOnHealth(t *tes
 		t.Fatalf("enrollments = %d, want 0: a spent budget never enrolls", got)
 	}
 
-	// thunderd finally reports healthy: the budget resets for the next
-	// outage.
+	// A healthy pass resets the budget for the next outage.
 	if err := restarted.reconcile(ctx); err != nil {
 		t.Fatalf("healthy pass: %v", err)
 	}
@@ -793,10 +781,48 @@ func TestReconcileRepairBudgetCapsAttemptsAcrossRestartsAndResetsOnHealth(t *tes
 	}
 }
 
-// memoryRepairBudgetStore is a repairBudgetStore fake that keeps the marker
-// outside the reconciler, so a test can share it across two reconciler
-// instances the way a marker file on the host survives a pod restart.
-// (by claude)
+// A spent budget from an old daemon build must not block a new image that
+// may well contain a fix. (by claude)
+func TestReconcileRepairBudgetResetsOnANewDaemonVersion(t *testing.T) {
+	oldVersion := version.Version
+	version.Version = "v1.0.0"
+	t.Cleanup(func() { version.Version = oldVersion })
+
+	unhealthy := `{"healthy":false,"service":{"active":"inactive"},"config":{"authTokenConfigured":true}}`
+	statuses := make([]scriptedStatus, repairAttemptLimit+1)
+	for i := range statuses {
+		statuses[i] = scriptedStatus{output: unhealthy}
+	}
+	runner := &scriptedRunner{statuses: statuses}
+	budget := &memoryRepairBudgetStore{}
+	reconciler, _ := newTestReconciler(t, runner)
+	reconciler.repairBudget = budget
+	ctx := context.Background()
+
+	for i := 0; i < repairAttemptLimit; i++ {
+		if err := reconciler.reconcile(ctx); err != nil {
+			t.Fatalf("pass %d: %v", i, err)
+		}
+	}
+	if got := runner.restartAttempts(); got != repairAttemptLimit {
+		t.Fatalf("restart attempts = %d, want %d", got, repairAttemptLimit)
+	}
+
+	// A new daemon image ships; the budget must not carry over.
+	version.Version = "v1.0.1"
+	if err := reconciler.reconcile(ctx); err != nil {
+		t.Fatalf("pass after version change: %v", err)
+	}
+	if got := runner.restartAttempts(); got != repairAttemptLimit+1 {
+		t.Fatalf("restart attempts after version change = %d, want %d", got, repairAttemptLimit+1)
+	}
+	if budget.marker.Attempts != 1 {
+		t.Fatalf("budget marker attempts = %d, want 1 (reset by the version change)", budget.marker.Attempts)
+	}
+}
+
+// memoryRepairBudgetStore is a repairBudgetStore fake a test can share
+// across two reconciler instances, the way a host file would. (by claude)
 type memoryRepairBudgetStore struct {
 	marker repairBudgetMarker
 }
