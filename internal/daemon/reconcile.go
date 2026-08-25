@@ -48,11 +48,10 @@ var transitionalServiceStates = map[string]struct{}{
 // kubelet plugin. Every step is idempotent and safe to repeat, so a pass that
 // fails halfway is recovered by the next one rather than by a pod restart.
 type reconciler struct {
-	cfg          Config
-	runner       commandRunner
-	nodes        nodeInfoReader
-	client       *thunder.Client
-	repairBudget repairBudgetStore
+	cfg    Config
+	runner commandRunner
+	nodes  nodeInfoReader
+	client *thunder.Client
 
 	// startPlugin is a field so tests can exercise the loop without an
 	// in-cluster kubelet.
@@ -67,6 +66,15 @@ type reconciler struct {
 	transitional   int
 	passes         int
 	libthunderPath string
+
+	// Repair budget state (repair_budget.go). In memory only: a pod restart
+	// resetting it is an acceptable tradeoff for not persisting it. (by claude)
+	repairAttempts          int
+	repairGivenUp           bool
+	repairStampedChecksum   string
+	repairAttemptedChecksum string
+	repairFailedChecksum    string
+	repairUpdateRetried     bool
 
 	// loggedStatus is the last thunderd status that was logged. Statuses are
 	// logged when they change rather than every pass.
@@ -160,7 +168,7 @@ func (r *reconciler) ensureEnrolled(ctx context.Context, cfg Config) error {
 		r.unhealthy = 0
 		r.transitional = 0
 		r.everHealthy = true
-		r.resetRepairBudget(ctx, cfg)
+		r.resetRepairBudget()
 		return nil
 	}
 
