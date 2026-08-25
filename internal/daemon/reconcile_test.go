@@ -3,6 +3,9 @@ package daemon
 import (
 	"context"
 	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -818,6 +821,107 @@ func TestReconcileRepairBudgetResetsOnANewDaemonVersion(t *testing.T) {
 	}
 	if budget.marker.Attempts != 1 {
 		t.Fatalf("budget marker attempts = %d, want 1 (reset by the version change)", budget.marker.Attempts)
+	}
+}
+
+// fetchThunderdChecksum reads the thunderd line out of a real
+// sha256sums.txt response. (by claude)
+func TestFetchThunderdChecksumParsesTheThunderdLine(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "aaaa  install.sh\nbbbb  thunderd\ncccc  thunder\n")
+	}))
+	defer server.Close()
+
+	checksum, err := fetchThunderdChecksum(context.Background(), server.URL)
+	if err != nil {
+		t.Fatalf("fetchThunderdChecksum: %v", err)
+	}
+	if checksum != "bbbb" {
+		t.Fatalf("checksum = %q, want bbbb", checksum)
+	}
+}
+
+// The checksum is only fetched once the budget is spent, and a change
+// resets the budget and reattempts the repair immediately. (by claude)
+func TestReconcileRepairBudgetResetsOnANewThunderdChecksum(t *testing.T) {
+	restore := repairThunderdChecksum
+	t.Cleanup(func() { repairThunderdChecksum = restore })
+	checksum := "checksum-1"
+	repairThunderdChecksum = func(context.Context, string) (string, error) { return checksum, nil }
+
+	unhealthy := `{"healthy":false,"service":{"active":"inactive"},"config":{"authTokenConfigured":true}}`
+	statuses := make([]scriptedStatus, repairAttemptLimit+2)
+	for i := range statuses {
+		statuses[i] = scriptedStatus{output: unhealthy}
+	}
+	runner := &scriptedRunner{statuses: statuses}
+	budget := &memoryRepairBudgetStore{}
+	reconciler, _ := newTestReconciler(t, runner)
+	reconciler.repairBudget = budget
+	ctx := context.Background()
+
+	for i := 0; i < repairAttemptLimit; i++ {
+		if err := reconciler.reconcile(ctx); err != nil {
+			t.Fatalf("pass %d: %v", i, err)
+		}
+	}
+
+	// Still spent, same checksum served: no repair, but it gets stamped.
+	if err := reconciler.reconcile(ctx); err != nil {
+		t.Fatalf("pass while spent: %v", err)
+	}
+	if got := runner.restartAttempts(); got != repairAttemptLimit {
+		t.Fatalf("restart attempts while spent = %d, want %d", got, repairAttemptLimit)
+	}
+	if budget.marker.ThunderdChecksum != checksum {
+		t.Fatalf("stamped checksum = %q, want %q", budget.marker.ThunderdChecksum, checksum)
+	}
+
+	// Distribution now serves a different thunderd: reset and retry.
+	checksum = "checksum-2"
+	if err := reconciler.reconcile(ctx); err != nil {
+		t.Fatalf("pass after checksum change: %v", err)
+	}
+	if got := runner.restartAttempts(); got != repairAttemptLimit+1 {
+		t.Fatalf("restart attempts after checksum change = %d, want %d", got, repairAttemptLimit+1)
+	}
+	if budget.marker.ThunderdChecksum != checksum {
+		t.Fatalf("restamped checksum = %q, want %q", budget.marker.ThunderdChecksum, checksum)
+	}
+}
+
+// A checksum fetch failure must not reset the budget. (by claude)
+func TestReconcileRepairBudgetStaysSpentWhenTheChecksumFetchFails(t *testing.T) {
+	restore := repairThunderdChecksum
+	t.Cleanup(func() { repairThunderdChecksum = restore })
+	repairThunderdChecksum = func(context.Context, string) (string, error) {
+		return "", errors.New("distribution unreachable")
+	}
+
+	unhealthy := `{"healthy":false,"service":{"active":"inactive"},"config":{"authTokenConfigured":true}}`
+	statuses := make([]scriptedStatus, repairAttemptLimit+1)
+	for i := range statuses {
+		statuses[i] = scriptedStatus{output: unhealthy}
+	}
+	runner := &scriptedRunner{statuses: statuses}
+	budget := &memoryRepairBudgetStore{}
+	reconciler, _ := newTestReconciler(t, runner)
+	reconciler.repairBudget = budget
+	ctx := context.Background()
+
+	for i := 0; i < repairAttemptLimit; i++ {
+		if err := reconciler.reconcile(ctx); err != nil {
+			t.Fatalf("pass %d: %v", i, err)
+		}
+	}
+	if err := reconciler.reconcile(ctx); err != nil {
+		t.Fatalf("pass after budget spent: %v", err)
+	}
+	if got := runner.restartAttempts(); got != repairAttemptLimit {
+		t.Fatalf("restart attempts = %d, want %d (a fetch error must not reset the budget)", got, repairAttemptLimit)
+	}
+	if budget.marker.ThunderdChecksum != "" {
+		t.Fatalf("checksum stamped despite the fetch failing: %q", budget.marker.ThunderdChecksum)
 	}
 }
 
