@@ -331,7 +331,18 @@ func danglingThunderdSymlinks(hostRoot string) ([]string, error) {
 				if err != nil || info.Mode()&os.ModeSymlink == 0 {
 					continue
 				}
-				if _, err := os.Stat(resolved); err == nil || !errors.Is(err, fs.ErrNotExist) {
+				target, err := os.Readlink(resolved)
+				if err != nil {
+					continue
+				}
+				// Absolute targets must be resolved in the host namespace, not
+				// the container root. Relative targets stay under hostRoot.
+				if filepath.IsAbs(target) {
+					target = resolveNodePath(hostRoot, target)
+				} else {
+					target = filepath.Join(dir, target)
+				}
+				if _, err := os.Stat(target); err == nil || !errors.Is(err, fs.ErrNotExist) {
 					continue
 				}
 				dangling = append(dangling, filepath.Join(base, filepath.Base(dir), "thunderd.service"))
