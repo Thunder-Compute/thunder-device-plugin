@@ -197,6 +197,41 @@ spec:
             request: gpu
 ```
 
+The generated `DeviceClass` supplies the installation default from
+`hostArtifacts.defaultProfile`. A workload can override it per claim with an
+opaque DRA configuration:
+
+```yaml
+    devices:
+      requests:
+        - name: gpu
+          exactly:
+            deviceClassName: thunder-gpu-a6000
+            allocationMode: ExactCount
+            count: 1
+      config:
+        - requests: [gpu]
+          opaque:
+            driver: thundercompute.com
+            parameters:
+              apiVersion: thundercompute.com/v1alpha1
+              kind: ThunderDeviceConfig
+              hostArtifacts:
+                profile: full
+```
+
+Profiles are `none` (no host GPU artifacts), `driver` (`nvidia-smi`,
+`libcuda.so.1`, and `libnvidia-ml.so.1`), and `full` (the driver artifacts plus
+the configured toolkit directory). Host paths are controlled only by the
+cluster administrator. The Thunder client staging hook is present for all three
+profiles. A selected profile whose artifacts are missing fails claim preparation
+instead of starting an incomplete container.
+
+Use `driver` when the image already contains its toolkit, `full` when it needs
+the host toolkit, and `none` only when the image supplies all required GPU
+artifacts. Because one claim produces one CDI device, all requests in a
+multi-request claim must resolve to the same profile.
+
 Or use the test chart:
 
 ```bash
@@ -460,6 +495,8 @@ misspelled `--set` key fails the install.
 | `operator.extendedResourcePrefix` | `thundercompute.com/gpu-` | Prefix for per-model extended resources; `""` for clusters below 1.36 |
 | `operator.reconcileInterval` | `60s` | How quickly inventory and targets are picked up |
 | `operator.orphanGracePeriod` | `5m` | How long a client resource may outlive its claim before being revoked |
+| `hostArtifacts.defaultProfile` | `driver` | Default host GPU artifact profile: `none`, `driver`, or `full` |
+| `hostArtifacts.toolkitPath` | `/usr/local/cuda` | Read-only host toolkit directory used by the `full` profile |
 | `nvidia.minDriverVersion` | `610` | Daemon refuses older drivers |
 | `kubelet.pluginDirRoot` | `/var/lib/kubelet/plugins` | Change on distributions that move the kubelet root |
 

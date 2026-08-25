@@ -5,6 +5,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/Thunder-Compute/thunder-device-plugin/internal/hostartifacts"
 )
 
 const (
@@ -32,8 +34,9 @@ type Config struct {
 	ReconcileInterval time.Duration
 	// DeviceClassPrefix and ExtendedResourcePrefix name the per-GPU-type
 	// DeviceClasses. An empty ExtendedResourcePrefix disables them.
-	DeviceClassPrefix      string
-	ExtendedResourcePrefix string
+	DeviceClassPrefix          string
+	ExtendedResourcePrefix     string
+	DefaultHostArtifactProfile hostartifacts.Profile
 	// OrphanGracePeriod is how long a ThunderClient may outlive its
 	// ResourceClaim before it is revoked and removed.
 	OrphanGracePeriod time.Duration
@@ -49,7 +52,8 @@ func ConfigFromEnv() (Config, error) {
 		DeviceClassPrefix: envOrDefault("DEVICE_CLASS_PREFIX", DefaultDeviceClassPrefix),
 		// Explicitly empty disables per-GPU-type classes, so only look at the
 		// default when the variable is unset.
-		ExtendedResourcePrefix: envOrDefaultAllowEmpty("EXTENDED_RESOURCE_PREFIX", DefaultExtendedResourcePrefix),
+		ExtendedResourcePrefix:     envOrDefaultAllowEmpty("EXTENDED_RESOURCE_PREFIX", DefaultExtendedResourcePrefix),
+		DefaultHostArtifactProfile: hostartifacts.Profile(envOrDefault("HOST_ARTIFACT_DEFAULT_PROFILE", string(hostartifacts.ProfileDriver))),
 	}
 
 	if raw := os.Getenv("ORPHAN_GRACE_PERIOD"); raw != "" {
@@ -69,6 +73,9 @@ func ConfigFromEnv() (Config, error) {
 			return Config{}, fmt.Errorf("parse RECONCILE_INTERVAL: %w", err)
 		}
 		cfg.ReconcileInterval = interval
+	}
+	if _, err := hostartifacts.ParseProfile(string(cfg.DefaultHostArtifactProfile)); err != nil {
+		return Config{}, fmt.Errorf("HOST_ARTIFACT_DEFAULT_PROFILE: %w", err)
 	}
 	if cfg.DriverName == "" {
 		return Config{}, fmt.Errorf("DRA_DRIVER_NAME is required")

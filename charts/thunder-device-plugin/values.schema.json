@@ -11,6 +11,7 @@
     "daemon",
     "node",
     "nvidia",
+    "hostArtifacts",
     "kubelet",
     "cdi",
     "tests"
@@ -270,6 +271,27 @@
         },
         "advertisedIPLabel": {
           "$ref": "#/definitions/labelKey"
+        }
+      }
+    },
+    "hostArtifacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "defaultProfile",
+        "toolkitPath"
+      ],
+      "properties": {
+        "defaultProfile": {
+          "enum": [
+            "none",
+            "driver",
+            "full"
+          ],
+          "description": "Default administrator-defined host artifact profile for GPU claims."
+        },
+        "toolkitPath": {
+          "$ref": "#/definitions/absolutePath"
         }
       }
     },
