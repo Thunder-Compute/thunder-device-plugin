@@ -101,7 +101,7 @@ func (r *reconciler) repairAttempt(ctx context.Context, cfg Config, action, upda
 		}
 	}
 
-	if err := r.sweepDanglingSymlinks(ctx); err != nil {
+	if err := r.sweepDanglingSymlinks(ctx, cfg); err != nil {
 		log.Printf("node %s: could not sweep dangling thunderd symlinks, repairing anyway: %v", cfg.Node, err)
 	}
 

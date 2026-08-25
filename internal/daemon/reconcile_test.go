@@ -30,6 +30,16 @@ type scriptedRunner struct {
 	// shellErrs fails only RunShell calls whose command contains the key, so
 	// a test can target one specific repair command. (by claude)
 	shellErrs map[string]error
+	// combined records every CombinedOutput call other than the status
+	// script (e.g. the symlink sweep's rm/systemctl calls), keyed the same
+	// way commandKey renders them. combinedErrors fails the matching call.
+	// (by claude)
+	combined       []string
+	combinedErrors map[string]error
+	// sequence records every command from both CombinedOutput and RunShell,
+	// in call order, so a test can assert one ran before another regardless
+	// of which method issued it. (by claude)
+	sequence []string
 }
 
 type scriptedStatus struct {
@@ -44,11 +54,17 @@ func (r *scriptedRunner) CombinedOutput(_ context.Context, name string, args ...
 		r.statusHit++
 		return []byte(status.output), status.err
 	}
+	r.combined = append(r.combined, key)
+	r.sequence = append(r.sequence, key)
+	if err := r.combinedErrors[key]; err != nil {
+		return nil, err
+	}
 	return r.nvidia[key], nil
 }
 
 func (r *scriptedRunner) RunShell(_ context.Context, _ string, command string) error {
 	r.attempted = append(r.attempted, command)
+	r.sequence = append(r.sequence, command)
 	for substr, err := range r.shellErrs {
 		if strings.Contains(command, substr) {
 			return err
@@ -160,6 +176,21 @@ func writeHostEnvFile(t *testing.T, hostRoot, token string) {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(path, []byte(`THUNDERD_AUTH_TOKEN="`+token+`"`+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// writeDanglingThunderdSymlink creates a thunderd.service enable-symlink
+// under hostRoot/base/wantsDir whose target does not exist, the way the
+// sweep is meant to find and remove it. (by claude)
+func writeDanglingThunderdSymlink(t *testing.T, hostRoot, base, wantsDir string) {
+	t.Helper()
+	dir := filepath.Join(hostRoot, base, wantsDir)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(hostRoot, base, "thunderd.service.gone")
+	if err := os.Symlink(target, filepath.Join(dir, "thunderd.service")); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -596,13 +627,10 @@ func TestReconcileRestartsAnEnrolledNodeInsteadOfReinstallingIt(t *testing.T) {
 		t.Fatalf("enrollment tokens minted = %d, want 0", got)
 	}
 
-	// The dangling-symlink sweep (B3) runs before any repair command.
-	sweepAt := commandIndex(runner.attempted, "systemctl daemon-reload")
 	restartAt := commandIndex(runner.attempted, "thunder up")
-	if sweepAt == -1 || restartAt == -1 || sweepAt > restartAt {
-		t.Fatalf("sweep did not run before the restart: attempted = %#v", runner.attempted)
+	if restartAt == -1 {
+		t.Fatalf("thunder up did not run: attempted = %#v", runner.attempted)
 	}
-
 	restart := runner.attempted[restartAt]
 	for _, want := range []string{"THUNDERD_TRANSIENT=1", "thunder up", "--ip '10.0.0.5'", "--zone 'us-west-2a'", "--node-name 'node-a'"} {
 		if !strings.Contains(restart, want) {
@@ -735,14 +763,103 @@ func TestReconcileSweepsDanglingSymlinksBeforeEveryRepair(t *testing.T) {
 		output: `{"healthy":false,"service":{"active":"inactive"},"config":{"authTokenConfigured":false}}`,
 	}}}
 	reconciler, _ := newTestReconciler(t, runner)
+	writeDanglingThunderdSymlink(t, reconciler.cfg.HostRoot, "/etc/systemd/system", "multi-user.target.wants")
 
 	if err := reconciler.reconcile(context.Background()); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
-	sweepAt := commandIndex(runner.attempted, "systemctl daemon-reload")
-	enrollAt := commandIndex(runner.attempted, "THUNDER_INSTALL_MODE=thunderd")
-	if sweepAt == -1 || enrollAt == -1 || sweepAt > enrollAt {
-		t.Fatalf("sweep did not run before enroll: attempted = %#v", runner.attempted)
+
+	rmAt := commandIndex(runner.sequence, "rm -f")
+	reloadAt := commandIndex(runner.sequence, "systemctl daemon-reload")
+	enrollAt := commandIndex(runner.sequence, "THUNDER_INSTALL_MODE=thunderd")
+	if rmAt == -1 || reloadAt == -1 || enrollAt == -1 {
+		t.Fatalf("sweep or enroll did not run: sequence = %#v", runner.sequence)
+	}
+	if rmAt > reloadAt || reloadAt > enrollAt {
+		t.Fatalf("sweep did not remove, reload, then enroll in order: sequence = %#v", runner.sequence)
+	}
+	// The command targets the real host path, not the hostRoot-prefixed one
+	// detection read it through: the runner executes in the host's own
+	// namespace, which has no /host prefix. (by claude)
+	wantPath := "/etc/systemd/system/multi-user.target.wants/thunderd.service"
+	if !strings.Contains(runner.sequence[rmAt], wantPath) || strings.Contains(runner.sequence[rmAt], reconciler.cfg.HostRoot) {
+		t.Fatalf("rm command = %q, want it to remove the real host path %q", runner.sequence[rmAt], wantPath)
+	}
+}
+
+// Detection runs every pass, but nothing is dangling in a fresh host root, so
+// the sweep issues no commands at all. (by claude)
+func TestReconcileSweepIssuesNoCommandsWhenNothingIsDangling(t *testing.T) {
+	runner := &scriptedRunner{statuses: []scriptedStatus{{
+		output: `{"healthy":false,"service":{"active":"inactive"},"config":{"authTokenConfigured":false}}`,
+	}}}
+	reconciler, _ := newTestReconciler(t, runner)
+
+	if err := reconciler.reconcile(context.Background()); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if got := runner.enrollments(); got != 1 {
+		t.Fatalf("enrollments = %d, want 1", got)
+	}
+	if commandIndex(runner.sequence, "rm ") != -1 || commandIndex(runner.sequence, "daemon-reload") != -1 {
+		t.Fatalf("sweep issued commands with nothing dangling: sequence = %#v", runner.sequence)
+	}
+}
+
+// danglingThunderdSymlinks only returns exact "thunderd.service" entries
+// that are both a symlink and dangling, across all four locations the sweep
+// covers -- a live symlink, a plain file, and an unrelated name are all
+// left alone. (by claude)
+func TestDanglingThunderdSymlinks(t *testing.T) {
+	hostRoot := t.TempDir()
+	writeDanglingThunderdSymlink(t, hostRoot, "/etc/systemd/system", "multi-user.target.wants")
+	writeDanglingThunderdSymlink(t, hostRoot, "/run/systemd/system", "thunderd.service.requires")
+
+	// A live symlink (target exists) must not be touched.
+	liveDir := filepath.Join(hostRoot, "/etc/systemd/system/other.wants")
+	if err := os.MkdirAll(liveDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	liveTarget := filepath.Join(hostRoot, "/etc/systemd/system/thunderd.service")
+	touch(t, liveTarget)
+	if err := os.Symlink(liveTarget, filepath.Join(liveDir, "thunderd.service")); err != nil {
+		t.Fatal(err)
+	}
+
+	// A plain file named thunderd.service, and a dangling symlink with an
+	// unrelated name, must not be touched either.
+	fileDir := filepath.Join(hostRoot, "/etc/systemd/system/another.wants")
+	if err := os.MkdirAll(fileDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	touch(t, filepath.Join(fileDir, "thunderd.service"))
+	otherDir := filepath.Join(hostRoot, "/etc/systemd/system/unrelated.wants")
+	if err := os.MkdirAll(otherDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(hostRoot, "gone"), filepath.Join(otherDir, "not-thunderd.service")); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := danglingThunderdSymlinks(hostRoot)
+	if err != nil {
+		t.Fatalf("danglingThunderdSymlinks: %v", err)
+	}
+	want := []string{
+		"/etc/systemd/system/multi-user.target.wants/thunderd.service",
+		"/run/systemd/system/thunderd.service.requires/thunderd.service",
+	}
+	gotSet := map[string]bool{}
+	for _, path := range got {
+		gotSet[path] = true
+	}
+	if len(got) != len(want) {
+		t.Fatalf("dangling = %#v, want exactly %#v", got, want)
+	}
+	for _, path := range want {
+		if !gotSet[path] {
+			t.Fatalf("dangling = %#v, missing %q", got, path)
+		}
 	}
 }
 
