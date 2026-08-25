@@ -2,9 +2,12 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"log"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -302,25 +305,58 @@ func (r *reconciler) reinstallCLI(ctx context.Context, cfg Config) error {
 	return nil
 }
 
-// sweepDanglingSymlinksCommand removes an exact "thunderd.service" entry that
-// is a symlink whose target no longer exists -- never a broad pattern match,
-// which could catch a live alias. (by claude)
-const sweepDanglingSymlinksCommand = `set -eu
-removed=0
-for link in /etc/systemd/system/*.wants/thunderd.service /etc/systemd/system/*.requires/thunderd.service /run/systemd/system/*.wants/thunderd.service /run/systemd/system/*.requires/thunderd.service; do
-  [ -L "$link" ] || continue
-  [ -e "$link" ] && continue
-  rm -f "$link"
-  removed=1
-done
-if [ "$removed" = 1 ]; then
-  systemctl daemon-reload
-fi
-`
+// sweepDanglingSymlinkBases are the two systemd unit directories the sweep
+// checks, each for its .wants and .requires subdirectories -- the same set
+// the sweep has always covered. (by claude)
+var sweepDanglingSymlinkBases = []string{"/etc/systemd/system", "/run/systemd/system"}
 
-func (r *reconciler) sweepDanglingSymlinks(ctx context.Context) error {
-	if err := r.runner.RunShell(ctx, "thunderd symlink sweep", sweepDanglingSymlinksCommand); err != nil {
-		return fmt.Errorf("sweep dangling thunderd symlinks: %w", err)
+// danglingThunderdSymlinks finds exact "thunderd.service" entries under
+// hostRoot's .wants/.requires directories that are symlinks whose target no
+// longer exists -- never a broad pattern match, which could catch a live
+// alias. Detection reads the host through hostRoot (the daemon's read-only
+// /host mount); returned paths are the real host paths, not
+// hostRoot-prefixed, for the runner to act on directly. (by claude)
+func danglingThunderdSymlinks(hostRoot string) ([]string, error) {
+	var dangling []string
+	for _, base := range sweepDanglingSymlinkBases {
+		for _, suffix := range []string{".wants", ".requires"} {
+			pattern := resolveNodePath(hostRoot, base) + "/*" + suffix
+			dirs, err := filepath.Glob(pattern)
+			if err != nil {
+				return nil, fmt.Errorf("glob %s: %w", pattern, err)
+			}
+			for _, dir := range dirs {
+				resolved := filepath.Join(dir, "thunderd.service")
+				info, err := os.Lstat(resolved)
+				if err != nil || info.Mode()&os.ModeSymlink == 0 {
+					continue
+				}
+				if _, err := os.Stat(resolved); err == nil || !errors.Is(err, fs.ErrNotExist) {
+					continue
+				}
+				dangling = append(dangling, filepath.Join(base, filepath.Base(dir), "thunderd.service"))
+			}
+		}
+	}
+	return dangling, nil
+}
+
+// sweepDanglingSymlinks removes any dangling thunderd.service entries found
+// and reloads systemd if it removed anything. Only plain commands run
+// through the runner -- no shell script. (by claude)
+func (r *reconciler) sweepDanglingSymlinks(ctx context.Context, cfg Config) error {
+	dangling, err := danglingThunderdSymlinks(cfg.HostRoot)
+	if err != nil {
+		return fmt.Errorf("find dangling thunderd symlinks: %w", err)
+	}
+	if len(dangling) == 0 {
+		return nil
+	}
+	if output, err := r.runner.CombinedOutput(ctx, "rm", append([]string{"-f"}, dangling...)...); err != nil {
+		return fmt.Errorf("remove dangling thunderd symlinks: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	if output, err := r.runner.CombinedOutput(ctx, "systemctl", "daemon-reload"); err != nil {
+		return fmt.Errorf("systemctl daemon-reload: %w: %s", err, strings.TrimSpace(string(output)))
 	}
 	return nil
 }
