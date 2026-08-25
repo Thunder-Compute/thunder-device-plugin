@@ -189,15 +189,13 @@ func (r *reconciler) ensureEnrolled(ctx context.Context, cfg Config) error {
 
 	if !r.nodeEnrolled(cfg, status, statusErr) {
 		log.Printf("thunderd unhealthy on node %s after %d check(s); enrolling", cfg.Node, r.unhealthy)
-		attempted, err := r.repairAttempt(ctx, cfg, func(ctx context.Context) error {
-			return r.enroll(ctx, cfg)
-		}, nil, nil)
-		if err != nil {
+		if err := r.sweepDanglingSymlinks(ctx); err != nil {
+			log.Printf("node %s: could not sweep dangling thunderd symlinks, enrolling anyway: %v", cfg.Node, err)
+		}
+		if err := r.enroll(ctx, cfg); err != nil {
 			return err
 		}
-		if attempted {
-			r.unhealthy, r.transitional = 0, 0
-		}
+		r.unhealthy, r.transitional = 0, 0
 		return nil
 	}
 
