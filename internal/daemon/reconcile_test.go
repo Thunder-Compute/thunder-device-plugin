@@ -737,25 +737,22 @@ func TestReconcileSweepsDanglingSymlinksBeforeEveryRepair(t *testing.T) {
 // held only in memory, so it survives the reconciler being recreated (a pod
 // restart or rollout) mid-outage: an in-memory counter would silently re-arm
 // the loop and repeat the mint-a-token-every-pass spam from 2026-08-24. Once
-// the budget is spent the daemon waits out a one-hour cool-off and then tries
-// exactly one more restart; a healthy pass clears the budget for the next
-// outage. (by claude)
-func TestReconcileRepairBudgetCapsCoolsOffAcrossRestartsAndResetsOnHealth(t *testing.T) {
+// the budget is spent the daemon gives up entirely -- no more repair
+// commands of any kind, ever, for this outage; a healthy pass clears the
+// budget for the next one. (by claude)
+func TestReconcileRepairBudgetCapsAttemptsAcrossRestartsAndResetsOnHealth(t *testing.T) {
 	unhealthy := `{"healthy":false,"service":{"active":"inactive"},"config":{"authTokenConfigured":true}}`
-	statuses := make([]scriptedStatus, 0, repairAttemptLimit+3)
-	for i := 0; i < repairAttemptLimit+2; i++ {
+	statuses := make([]scriptedStatus, 0, repairAttemptLimit+2)
+	for i := 0; i < repairAttemptLimit+1; i++ {
 		statuses = append(statuses, scriptedStatus{output: unhealthy})
 	}
 	statuses = append(statuses, scriptedStatus{output: healthyStatus})
 
 	runner := &scriptedRunner{statuses: statuses}
 	budget := &memoryRepairBudgetStore{}
-	clockTime := time.Unix(1_800_000_000, 0)
-	clock := func() time.Time { return clockTime }
 
 	reconciler, _ := newTestReconciler(t, runner)
 	reconciler.repairBudget = budget
-	reconciler.now = clock
 	ctx := context.Background()
 
 	// Spend the whole budget.
@@ -767,32 +764,23 @@ func TestReconcileRepairBudgetCapsCoolsOffAcrossRestartsAndResetsOnHealth(t *tes
 	if got := runner.restartAttempts(); got != repairAttemptLimit {
 		t.Fatalf("restart attempts = %d, want %d", got, repairAttemptLimit)
 	}
-	if !budget.marker.CoolingOff {
-		t.Fatal("budget did not enter cool-off after the limit")
+	if budget.marker.Attempts != repairAttemptLimit {
+		t.Fatalf("budget marker attempts = %d, want %d", budget.marker.Attempts, repairAttemptLimit)
 	}
 
 	// Recreate the reconciler, as a pod restart would, against the same
-	// backing store: it must not get a fresh budget.
+	// backing store: it must not get a fresh budget, and no further repair
+	// of any kind is attempted.
 	restarted, _ := newTestReconciler(t, runner)
 	restarted.repairBudget = budget
-	restarted.now = clock
 	if err := restarted.reconcile(ctx); err != nil {
 		t.Fatalf("pass after recreation: %v", err)
 	}
 	if got := runner.restartAttempts(); got != repairAttemptLimit {
-		t.Fatalf("restart attempts after recreation = %d, want %d (cool-off not elapsed)", got, repairAttemptLimit)
-	}
-
-	// An hour later, exactly one more restart is tried.
-	clockTime = clockTime.Add(repairCoolOff + time.Minute)
-	if err := restarted.reconcile(ctx); err != nil {
-		t.Fatalf("pass after cool-off: %v", err)
-	}
-	if got := runner.restartAttempts(); got != repairAttemptLimit+1 {
-		t.Fatalf("restart attempts after cool-off = %d, want %d", got, repairAttemptLimit+1)
+		t.Fatalf("restart attempts after recreation = %d, want %d (budget spent, no retry)", got, repairAttemptLimit)
 	}
 	if got := runner.enrollments(); got != 0 {
-		t.Fatalf("enrollments = %d, want 0: cool-off never enrolls", got)
+		t.Fatalf("enrollments = %d, want 0: a spent budget never enrolls", got)
 	}
 
 	// thunderd finally reports healthy: the budget resets for the next

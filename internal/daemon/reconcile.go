@@ -53,9 +53,6 @@ type reconciler struct {
 	nodes        nodeInfoReader
 	client       *thunder.Client
 	repairBudget repairBudgetStore
-	// now lets tests control the clock the repair cool-off is measured
-	// against. Real runs leave it nil and get time.Now. (by claude)
-	now func() time.Time
 
 	// startPlugin is a field so tests can exercise the loop without an
 	// in-cluster kubelet.
@@ -196,7 +193,7 @@ func (r *reconciler) ensureEnrolled(ctx context.Context, cfg Config) error {
 
 	if !r.nodeEnrolled(cfg, status, statusErr) {
 		log.Printf("thunderd unhealthy on node %s after %d check(s); enrolling", cfg.Node, r.unhealthy)
-		attempted, err := r.repairAttempt(ctx, cfg, "enroll", false, func(ctx context.Context) error {
+		attempted, err := r.repairAttempt(ctx, cfg, func(ctx context.Context) error {
 			return r.enroll(ctx, cfg)
 		})
 		if err != nil {
@@ -216,7 +213,7 @@ func (r *reconciler) ensureEnrolled(ctx context.Context, cfg Config) error {
 	if statusErr != nil {
 		log.Printf("thunder status unavailable on enrolled node %s after %d check(s) (%v); reinstalling the CLI without an enrollment token",
 			cfg.Node, r.unhealthy, statusErr)
-		attempted, err := r.repairAttempt(ctx, cfg, "cli reinstall", false, func(ctx context.Context) error {
+		attempted, err := r.repairAttempt(ctx, cfg, func(ctx context.Context) error {
 			return r.reinstallCLI(ctx, cfg)
 		})
 		if err != nil {
@@ -231,7 +228,7 @@ func (r *reconciler) ensureEnrolled(ctx context.Context, cfg Config) error {
 
 	log.Printf("thunderd is installed and enrolled on node %s but not healthy after %d check(s); restarting it",
 		cfg.Node, r.unhealthy)
-	attempted, err := r.repairAttempt(ctx, cfg, "restart", true, func(ctx context.Context) error {
+	attempted, err := r.repairAttempt(ctx, cfg, func(ctx context.Context) error {
 		return r.restart(ctx, cfg)
 	})
 	if err != nil {
