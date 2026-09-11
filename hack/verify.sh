@@ -121,6 +121,8 @@ verify_charts() {
 
   verify_port_range "${main_manifest}"
 
+  verify_extra_env "${main_manifest}"
+
   verify_chart_quality "${main_manifest}"
 
   if command -v kubectl >/dev/null 2>&1; then
@@ -139,6 +141,25 @@ verify_charts() {
     fi
   else
     warn "skipping schema check: kubectl not found"
+  fi
+}
+
+verify_extra_env() {
+  local main_manifest="$1"
+  step "Daemon extra environment"
+
+  check_not_contains "PostHog token is not configured by default" "POSTHOG_API_TOKEN" "${main_manifest}"
+
+  local configured
+  if configured="$("${HELM}" template verify "${CHART_MAIN}" \
+    --show-only templates/daemonset.yaml \
+    --set-json 'daemon.extraEnv=[{"name":"POSTHOG_API_TOKEN","valueFrom":{"secretKeyRef":{"name":"posthog-secret","key":"posthog-api-token"}}},{"name":"EXAMPLE_SETTING","value":"enabled"}]' 2>&1)"; then
+    check_contains "daemon receives the PostHog project token by Secret reference" \
+      $'- name: POSTHOG_API_TOKEN\n              valueFrom:\n                secretKeyRef:\n                  key: posthog-api-token\n                  name: posthog-secret' "${configured}"
+    check_contains "daemon receives literal extra environment values" \
+      $'- name: EXAMPLE_SETTING\n              value: enabled' "${configured}"
+  else
+    check_fail "daemon.extraEnv renders" "${configured}"
   fi
 }
 

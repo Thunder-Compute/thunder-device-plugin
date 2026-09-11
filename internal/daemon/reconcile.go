@@ -171,6 +171,9 @@ func (r *reconciler) ensureEnrolled(ctx context.Context, cfg Config) error {
 		r.transitional = 0
 		r.restarts = 0
 		r.everHealthy = true
+		if err := r.reconcilePostHogToken(ctx, cfg); err != nil {
+			log.Printf("could not configure thunderd PostHog on node %s (will retry): %v", cfg.Node, err)
+		}
 		return nil
 	}
 
@@ -227,6 +230,15 @@ func (r *reconciler) ensureEnrolled(ctx context.Context, cfg Config) error {
 	r.unhealthy = 0
 	r.transitional = 0
 	return nil
+}
+
+func (r *reconciler) reconcilePostHogToken(ctx context.Context, cfg Config) error {
+	desired := strings.TrimSpace(cfg.PostHogAPIToken)
+	if desired == "" {
+		return nil
+	}
+	return r.runner.RunShell(ctx, "thunderd PostHog configuration",
+		"thunder set posthog-api-token "+shellQuote(desired))
 }
 
 // logStatus logs a thunderd status when it differs from the one logged last,
