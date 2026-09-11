@@ -82,6 +82,10 @@ func (r *scriptedRunner) Stream(ctx context.Context, _ func(string), _ string, _
 	return ctx.Err()
 }
 
+func (r *scriptedRunner) RunShellInput(ctx context.Context, label string, command string, _ string) error {
+	return r.RunShell(ctx, label, command)
+}
+
 func (r *scriptedRunner) enrollments() int {
 	return countCommands(r.shell, "THUNDER_INSTALL_MODE=thunderd")
 }

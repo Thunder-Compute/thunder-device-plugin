@@ -70,6 +70,12 @@ daemon:
     pullPolicy: IfNotPresent
   # -- Additional environment variables for the daemon container, using Kubernetes EnvVar entries. Use valueFrom for secrets.
   extraEnv: []
+  # THUNDERD_ENV_<key> writes <key> to /etc/thunder/thunderd.env once at
+  # daemon startup, without restarting thunderd. Undefined keys are untouched.
+  # Uncommenting an empty value explicitly clears that setting:
+  # extraEnv:
+  #   - name: THUNDERD_ENV_POSTHOG_API_TOKEN
+  #     value: ""
   # -- Annotations added to daemon pods.
   podAnnotations: {}
   # -- Labels added to daemon pods.

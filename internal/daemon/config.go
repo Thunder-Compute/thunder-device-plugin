@@ -15,7 +15,7 @@ const (
 	EnvThunderAPIURL       = "THUNDER_API_URL"
 	EnvThunderPortRange    = "THUNDER_PORT_RANGE"
 	EnvThunderAPIToken     = "THUNDER_API_TOKEN"
-	EnvPostHogAPIToken     = "POSTHOG_API_TOKEN"
+	EnvThunderdPrefix      = "THUNDERD_ENV_"
 	EnvHostRoot            = "HOST_ROOT"
 	EnvLibCUDAPath         = "LIBCUDA_PATH"
 	EnvLibNVMLPath         = "LIBNVIDIA_ML_PATH"
@@ -81,7 +81,7 @@ type Config struct {
 	PortRange           string
 	ThunderAPIURL       string
 	ThunderAPIToken     string
-	PostHogAPIToken     string
+	ThunderdEnv         map[string]string
 	HostRoot            string
 	LibCUDAPath         string
 	LibNVMLPath         string
@@ -113,7 +113,12 @@ type Config struct {
 }
 
 func ConfigFromEnv() (Config, error) {
-	return configFromLookup(os.LookupEnv)
+	cfg, err := configFromLookup(os.LookupEnv)
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.ThunderdEnv, err = thunderdEnvFromEnviron(os.Environ())
+	return cfg, err
 }
 
 func configFromLookup(lookup func(string) (string, bool)) (Config, error) {
@@ -148,7 +153,6 @@ func configFromLookup(lookup func(string) (string, bool)) (Config, error) {
 		PortRange:           portRange,
 		ThunderAPIURL:       optionalEnv(lookup, EnvThunderAPIURL, ""),
 		ThunderAPIToken:     apiToken,
-		PostHogAPIToken:     optionalEnv(lookup, EnvPostHogAPIToken, ""),
 		HostRoot:            optionalEnv(lookup, EnvHostRoot, DefaultHostRoot),
 		LibCUDAPath:         optionalEnv(lookup, EnvLibCUDAPath, DefaultLibCUDAPath),
 		LibNVMLPath:         optionalEnv(lookup, EnvLibNVMLPath, DefaultLibNVMLPath),
