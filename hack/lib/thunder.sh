@@ -93,9 +93,22 @@ operator_logs() {
 
 # kind_bridge_address prints the host's IPv4 address on the kind docker bridge,
 # which is how a workload in the cluster reaches a server on the host.
+# An optional cluster name supplies the fallback below.
 kind_bridge_address() {
-  docker network inspect kind 2>/dev/null |
-    jq -r '.[0].IPAM.Config[]? | select((.Gateway // "") | test(":") | not) | .Gateway' | head -1
+  local address
+  # `.Gateway // empty` drops gatewayless entries. Defaulting inside select()
+  # instead let jq -r print the literal "null", which the stub then resolved as
+  # a hostname. (by claude)
+  address="$(docker network inspect kind 2>/dev/null |
+    jq -r '.[0].IPAM.Config[]? | .Gateway // empty | select(test(":") | not)' | head -1)"
+  # Some daemons record the subnet without a gateway, so ask a node what it
+  # actually routes through. (by claude)
+  if [[ -z "${address}" && -n "${1:-}" ]]; then
+    address="$(docker exec "${1}-control-plane" ip -4 route show default 2>/dev/null |
+      awk '{print $3}' | head -1)"
+  fi
+  [[ "${address}" =~ ^[0-9]+(\.[0-9]+){3}$ ]] || return 1
+  printf '%s\n' "${address}"
 }
 
 # pool_device_count_is <gpu-type> <count> is true once the pool publishes
