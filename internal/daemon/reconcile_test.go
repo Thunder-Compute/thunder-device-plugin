@@ -82,6 +82,10 @@ func (r *scriptedRunner) Stream(ctx context.Context, _ func(string), _ string, _
 	return ctx.Err()
 }
 
+func (r *scriptedRunner) RunShellInput(ctx context.Context, label string, command string, _ string) error {
+	return r.RunShell(ctx, label, command)
+}
+
 func (r *scriptedRunner) enrollments() int {
 	return countCommands(r.shell, "THUNDER_INSTALL_MODE=thunderd")
 }
@@ -189,7 +193,7 @@ func writeDanglingThunderdSymlink(t *testing.T, hostRoot, base, wantsDir string)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	target := filepath.Join(hostRoot, base, "thunderd.service.gone")
+	target := filepath.Join(base, "thunderd.service.gone")
 	if err := os.Symlink(target, filepath.Join(dir, "thunderd.service")); err != nil {
 		t.Fatal(err)
 	}
@@ -820,8 +824,8 @@ func TestDanglingThunderdSymlinks(t *testing.T) {
 	if err := os.MkdirAll(liveDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	liveTarget := filepath.Join(hostRoot, "/etc/systemd/system/thunderd.service")
-	touch(t, liveTarget)
+	liveTarget := "/etc/systemd/system/thunderd.service"
+	touch(t, filepath.Join(hostRoot, liveTarget))
 	if err := os.Symlink(liveTarget, filepath.Join(liveDir, "thunderd.service")); err != nil {
 		t.Fatal(err)
 	}

@@ -23,6 +23,12 @@ func Run(ctx context.Context, cfg Config) error {
 func run(ctx context.Context, cfg Config, runner commandRunner, nodes nodeInfoReader) error {
 	log.Printf("starting thunder daemon %s: node=%s", buildDescription(), cfg.Node)
 
+	// Apply operator-supplied settings once, before enrollment or repair can
+	// start thunderd. This operation never restarts it or retries.
+	if err := configureThunderdEnv(ctx, cfg, runner); err != nil {
+		log.Printf("could not configure thunderd environment on node %s (not retried): %v", cfg.Node, err)
+	}
+
 	// thunderd's own logs are republished as this pod's logs, so whoever is
 	// debugging a node reads them with kubectl rather than over SSH. It runs
 	// alongside the reconcile loop and stops with it.
@@ -35,8 +41,8 @@ func run(ctx context.Context, cfg Config, runner commandRunner, nodes nodeInfoRe
 		thunder.WithUserAgent(version.UserAgent("daemon")),
 		thunder.WithInstallURL(cfg.ThunderInstallURL))
 
-	// Everything the node needs is driven by the reconcile loop rather than by
-	// a one-shot startup sequence, so the daemon recovers on its own when
+	// Node enrollment and health are driven by the reconcile loop, so the
+	// daemon recovers on its own when
 	// thunderd is removed, reinstalled or restarted underneath it.
 	reconciler := &reconciler{
 		cfg:         cfg,

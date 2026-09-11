@@ -23,6 +23,9 @@ type commandRunner interface {
 	// unattributed, which is what made the installer's progress unreadable
 	// next to the daemon's own lines.
 	RunShell(ctx context.Context, label string, command string) error
+	// RunShellInput supplies file contents on stdin, keeping credentials out
+	// of the command line and process listings.
+	RunShellInput(ctx context.Context, label string, command string, input string) error
 	// Stream runs a command on the node and calls onLine for each line it
 	// writes, returning when the command exits or ctx is cancelled. It is how
 	// the daemon follows output that never ends, such as thunderd's journal.
@@ -56,6 +59,10 @@ func (r osCommandRunner) RunShell(ctx context.Context, label string, command str
 	return r.stream(ctx, func(line string) { log.Printf("%s: %s", label, line) }, "/bin/sh", "-c", command)
 }
 
+func (r osCommandRunner) RunShellInput(ctx context.Context, label string, command string, input string) error {
+	return r.streamInput(ctx, strings.NewReader(input), func(line string) { log.Printf("%s: %s", label, line) }, "/bin/sh", "-c", command)
+}
+
 func (r osCommandRunner) Stream(ctx context.Context, onLine func(string), name string, args ...string) error {
 	return r.stream(ctx, onLine, name, args...)
 }
@@ -64,7 +71,12 @@ func (r osCommandRunner) Stream(ctx context.Context, onLine func(string), name s
 // pipe is drained after the scan loop so a line too long to buffer stalls the
 // log rather than the command that is writing it.
 func (r osCommandRunner) stream(ctx context.Context, onLine func(string), name string, args ...string) error {
+	return r.streamInput(ctx, nil, onLine, name, args...)
+}
+
+func (r osCommandRunner) streamInput(ctx context.Context, input io.Reader, onLine func(string), name string, args ...string) error {
 	cmd := r.command(ctx, name, args...)
+	cmd.Stdin = input
 	reader, writer := io.Pipe()
 	cmd.Stdout = writer
 	cmd.Stderr = writer
