@@ -250,6 +250,29 @@
         },
         "resources": {
           "type": "object"
+        },
+        "extraEnv": {
+          "type": "array",
+          "description": "Additional Kubernetes EnvVar entries for the daemon container.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "name"
+            ],
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1
+              },
+              "value": {
+                "type": "string"
+              },
+              "valueFrom": {
+                "type": "object"
+              }
+            }
+          }
         }
       }
     },

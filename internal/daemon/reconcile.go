@@ -2,8 +2,12 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
+	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -171,6 +175,9 @@ func (r *reconciler) ensureEnrolled(ctx context.Context, cfg Config) error {
 		r.transitional = 0
 		r.restarts = 0
 		r.everHealthy = true
+		if err := r.reconcilePostHogToken(ctx, cfg, status.Config.EnvPath); err != nil {
+			log.Printf("could not configure thunderd PostHog on node %s (will retry): %v", cfg.Node, err)
+		}
 		return nil
 	}
 
@@ -227,6 +234,36 @@ func (r *reconciler) ensureEnrolled(ctx context.Context, cfg Config) error {
 	r.unhealthy = 0
 	r.transitional = 0
 	return nil
+}
+
+func (r *reconciler) reconcilePostHogToken(ctx context.Context, cfg Config, envPath string) error {
+	desired := strings.TrimSpace(cfg.PostHogAPIToken)
+	if desired == "" {
+		return nil
+	}
+	if envPath == "" {
+		envPath = "/etc/thunder/thunderd.env"
+	}
+	data, err := os.ReadFile(filepath.Join(cfg.HostRoot, envPath))
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("read thunderd configuration: %w", err)
+	}
+	var saved string
+	for _, line := range strings.Split(string(data), "\n") {
+		key, value, ok := strings.Cut(line, "=")
+		if !ok || strings.TrimSpace(key) != EnvPostHogAPIToken {
+			continue
+		}
+		saved = strings.TrimSpace(value)
+		if unquoted, err := strconv.Unquote(saved); err == nil {
+			saved = unquoted
+		}
+	}
+	if saved == desired {
+		return nil
+	}
+	return r.runner.RunShell(ctx, "thunderd PostHog configuration",
+		"thunder set posthog-api-token "+shellQuote(desired))
 }
 
 // logStatus logs a thunderd status when it differs from the one logged last,

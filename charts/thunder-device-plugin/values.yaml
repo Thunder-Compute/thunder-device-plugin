@@ -68,6 +68,8 @@ daemon:
     tag: "0f01656b662516c3da790dd5e3072c1b12114b6c"
     # -- Pull policy for the node daemon image. (Options: "Always", "IfNotPresent", "Never")
     pullPolicy: IfNotPresent
+  # -- Additional environment variables for the daemon container, using Kubernetes EnvVar entries. Use valueFrom for secrets.
+  extraEnv: []
   # -- Annotations added to daemon pods.
   podAnnotations: {}
   # -- Labels added to daemon pods.

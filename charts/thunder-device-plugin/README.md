@@ -176,12 +176,27 @@ re-enroll.
 | `daemon.image.repository` | string | `ghcr.io/thunder-compute/thunder-device-plugin/daemon` | Daemon image |
 | `daemon.image.tag` | string | `""` | Daemon image tag; CI records the published source-commit tag before release |
 | `daemon.image.pullPolicy` | string | `IfNotPresent` | Daemon image pull policy |
+| `daemon.extraEnv` | list | `[]` | Additional Kubernetes EnvVar entries for the daemon container; use `valueFrom` for secrets |
 | `daemon.podAnnotations` | object | `{}` | Annotations for daemon pods |
 | `daemon.podLabels` | object | `{}` | Labels for daemon pods |
 | `daemon.nodeSelector` | object | `{}` | Additional node selector for daemon pods |
 | `daemon.tolerations` | list | `[]` | Tolerations for daemon pods |
 | `daemon.affinity` | object | `{}` | Additional affinity for daemon pods |
 | `daemon.resources` | object | `{}` | Resources for the daemon container |
+
+To enable PostHog session events, supply the project token through an existing Secret. On each healthy reconciliation, the daemon checks the saved token in the host's thunderd environment file and runs `thunder set posthog-api-token` only when it differs. This works with the existing host CLI, which writes the file and restarts thunderd on each `set` call.
+
+Configuration failures are logged without blocking DRA startup. If saving succeeds but restarting fails, thunderd needs a later successful restart to apply the token.
+
+```yaml
+daemon:
+  extraEnv:
+    - name: POSTHOG_API_TOKEN
+      valueFrom:
+        secretKeyRef:
+          name: posthog-secret
+          key: posthog-api-token
+```
 
 ### Node labels
 
