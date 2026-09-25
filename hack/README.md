@@ -61,22 +61,26 @@ What it does:
 6. Asserts the operator made **no writes** to Thunder. Creating zones and
    enrolling hardware is the node daemon's job; the operator only reads.
 7. Runs the chart's own `helm test` in cluster.
-8. Installs the pod test chart, and asserts the scheduler allocates two
+8. Cordons the only host through the stub's real Central inventory shape and
+   asserts the operator removes its ResourceSlice and typed DeviceClass, keeps
+   live clients as the capacity floor, and restores physical capacity after
+   uncordoning.
+9. Installs the pod test chart, and asserts the scheduler allocates two
    distinct GPU devices to the claim from the right pool.
-9. Asserts the operator generated a `DeviceClass` per GPU type, each pinning its
+10. Asserts the operator generated a `DeviceClass` per GPU type, each pinning its
    model with a CEL selector and exposing its own extended resource.
-10. Adds a second GPU model (H100) to inventory and asserts the operator creates
+11. Adds a second GPU model (H100) to inventory and asserts the operator creates
    its class, extended resource and pool on its own, and that a pod can request
    the new resource immediately.
-11. Asserts a `resources.limits: thundercompute.com/gpu-a6000: 2` pod is served
+12. Asserts a `resources.limits: thundercompute.com/gpu-a6000: 2` pod is served
    from the A6000 zone pool, gets two GPUs of that model only, and that the
    resource is scheduler-resolved rather than advertised in node `allocatable`.
-12. Asserts a typed request larger than that model's supply stays pending
-    instead of borrowing the other model.
-13. Asserts a request for more GPUs than the zone has never allocates.
-14. Retires the H100s and asserts the class and pool are pruned, leaving the
-    other model untouched.
-15. Raises the zone's oversubscription target in the stub API to `1.5` and
+13. Asserts a typed request larger than that model's supply stays pending
+   instead of borrowing the other model.
+14. Asserts a request for more GPUs than the zone has never allocates.
+15. Retires the H100s and asserts the class and pool are pruned, leaving the
+   other model untouched.
+16. Raises the zone's oversubscription target in the stub API to `1.5` and
     asserts the pool grows from 4 to 6 GPUs, records the target on the slice,
     keeps the devices exclusive, and shrinks again when the target returns to 1.
 

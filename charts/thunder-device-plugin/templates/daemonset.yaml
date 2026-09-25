@@ -79,6 +79,9 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.thunder.secretName | quote }}
                   key: THUNDER_API_TOKEN
+            {{- with .Values.daemon.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
           volumeMounts:
             - name: host-root
               mountPath: "/host"

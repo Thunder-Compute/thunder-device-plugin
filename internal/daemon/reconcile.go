@@ -2,8 +2,12 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"log"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -21,17 +25,10 @@ const (
 	ThunderReconcileMaxBackoff = 5 * time.Minute
 
 	// unhealthyReconcileThreshold is how many consecutive unhealthy checks it
-	// takes to re-enroll a node that was previously healthy. A node that has
+	// takes to repair a node that was previously healthy. A node that has
 	// never been healthy skips the wait, so a fresh node still enrolls on the
 	// first pass.
 	unhealthyReconcileThreshold = 3
-
-	// restartRepairLimit is how many restarts the daemon will try on an
-	// enrolled node before reinstalling it instead. Restarting is the cheap
-	// repair, not the only one: a restart that fails, or that runs but leaves
-	// thunderd unhealthy anyway, must not become a loop that never reaches the
-	// repair that would have worked.
-	restartRepairLimit = 2
 
 	// transitionalReconcileThreshold bounds how long thunderd may sit in a
 	// systemd transition before it counts as broken. Restarting and stopping
@@ -73,13 +70,18 @@ type reconciler struct {
 	passes         int
 	libthunderPath string
 
+	// Repair budget state (repair_budget.go). In memory only: a pod restart
+	// resetting it is an acceptable tradeoff for not persisting it. (by claude)
+	repairAttempts          int
+	repairGivenUp           bool
+	repairStampedChecksum   string
+	repairAttemptedChecksum string
+	repairFailedChecksum    string
+	repairUpdateRetried     bool
+
 	// loggedStatus is the last thunderd status that was logged. Statuses are
 	// logged when they change rather than every pass.
 	loggedStatus statusKey
-
-	// restarts counts the restarts attempted since thunderd was last healthy.
-	// See restartRepairLimit.
-	restarts int
 }
 
 // loop reconciles until the context is cancelled. It returns only on
@@ -155,9 +157,8 @@ func (r *reconciler) reconcile(ctx context.Context) error {
 }
 
 // ensureEnrolled brings thunderd back to healthy on the host when it is not.
-// An unreadable status counts as unhealthy: `thunder status` exiting 127 is
-// what an uninstalled thunderd looks like, and that is precisely the case the
-// daemon has to recover from.
+// Once enrolled, a node is never re-enrolled: enroll() is reserved for a
+// node that has never been enrolled at all. (by claude)
 func (r *reconciler) ensureEnrolled(ctx context.Context, cfg Config) error {
 	status, statusErr := getThunderStatus(ctx, r.runner)
 	r.logStatus(cfg, status, statusErr)
@@ -169,8 +170,8 @@ func (r *reconciler) ensureEnrolled(ctx context.Context, cfg Config) error {
 		}
 		r.unhealthy = 0
 		r.transitional = 0
-		r.restarts = 0
 		r.everHealthy = true
+		r.resetRepairBudget()
 		return nil
 	}
 
@@ -197,35 +198,177 @@ func (r *reconciler) ensureEnrolled(ctx context.Context, cfg Config) error {
 		return nil
 	}
 
-	// A node whose CLI answered and whose auth token is already on disk needs
-	// thunderd started, not installed: reinstalling downloads the CLI again
-	// and spends a fresh single-use enrollment token on a node Thunder has
-	// already enrolled.
-	if statusErr == nil && status.enrolled() && r.restarts < restartRepairLimit {
-		r.restarts++
-		log.Printf("thunderd is installed and enrolled on node %s but not healthy after %d check(s); restarting it (attempt %d/%d)",
-			cfg.Node, r.unhealthy, r.restarts, restartRepairLimit)
-		if err := r.restart(ctx, cfg); err != nil {
-			log.Printf("could not restart thunderd on node %s, reinstalling it instead: %v", cfg.Node, err)
-		} else {
-			// Health is confirmed by the next pass rather than assumed here.
-			// A restart that ran but did not fix the node is why the attempts
-			// are counted rather than only the failures.
-			r.unhealthy = 0
-			r.transitional = 0
-			return nil
+	if !r.nodeEnrolled(cfg, status, statusErr) {
+		log.Printf("thunderd unhealthy on node %s after %d check(s); enrolling", cfg.Node, r.unhealthy)
+		attempted, err := r.repairAttempt(ctx, cfg, func(ctx context.Context) error {
+			return r.enroll(ctx, cfg)
+		}, nil, nil)
+		if err != nil {
+			return err
 		}
+		if attempted {
+			r.unhealthy, r.transitional = 0, 0
+		}
+		return nil
 	}
 
-	log.Printf("thunderd unhealthy on node %s after %d check(s); enrolling", cfg.Node, r.unhealthy)
-	if err := r.enroll(ctx, cfg); err != nil {
-		return err
+	// Enrolled: a CLI that won't even answer is reinstalled (no token
+	// spent); one that answered but left thunderd down is restarted.
+	// Neither ever falls through to enroll(). (by claude)
+	if statusErr != nil {
+		log.Printf("thunder status unavailable on enrolled node %s after %d check(s) (%v); reinstalling the CLI without an enrollment token",
+			cfg.Node, r.unhealthy, statusErr)
+		attempted, err := r.repairAttempt(ctx, cfg, func(ctx context.Context) error {
+			return r.reinstallCLI(ctx, cfg)
+		}, nil, nil)
+		if err != nil {
+			log.Printf("could not reinstall the thunder CLI on node %s: %v", cfg.Node, err)
+			return nil
+		}
+		if attempted {
+			r.unhealthy, r.transitional = 0, 0
+		}
+		return nil
 	}
-	// A reinstall re-establishes what the cheap repair could not, so restarts
-	// are worth trying again on the next outage.
-	r.restarts = 0
-	r.unhealthy = 0
-	r.transitional = 0
+
+	log.Printf("thunderd is installed and enrolled on node %s but not healthy after %d check(s); restarting it",
+		cfg.Node, r.unhealthy)
+	attempted, err := r.repairAttempt(ctx, cfg, func(ctx context.Context) error {
+		return r.restart(ctx, cfg)
+	}, func(ctx context.Context) error {
+		return r.update(ctx, cfg)
+	}, func(ctx context.Context) error {
+		return r.rollbackThunderd(ctx, cfg)
+	})
+	if err != nil {
+		log.Printf("could not restart thunderd on node %s: %v", cfg.Node, err)
+		return nil
+	}
+	if attempted {
+		// Confirmed healthy on the next pass, not assumed here. (by claude)
+		r.unhealthy, r.transitional = 0, 0
+	}
+	return nil
+}
+
+// thunderdEnvPath is thunderd's fixed env file location on every node. (by claude)
+const thunderdEnvPath = "/etc/thunder/thunderd.env"
+
+// nodeEnrolled trusts thunder status's own AuthTokenConfigured when it has an
+// answer; otherwise (status unreadable, or it ran but couldn't read its own
+// env file) it reads the ground truth from the host env file directly.
+// (by claude)
+func (r *reconciler) nodeEnrolled(cfg Config, status thunderStatus, statusErr error) bool {
+	if statusErr == nil && (status.enrolled() || status.Config.Error == "") {
+		return status.enrolled()
+	}
+	return hostAuthTokenConfigured(cfg)
+}
+
+// hostAuthTokenConfigured reads THUNDERD_AUTH_TOKEN from thunderd's env file
+// via the host mount. Any read or parse failure counts as "not enrolled".
+// (by claude)
+func hostAuthTokenConfigured(cfg Config) bool {
+	data, err := os.ReadFile(resolveNodePath(cfg.HostRoot, thunderdEnvPath))
+	if err != nil {
+		return false
+	}
+	return envValue(string(data), "THUNDERD_AUTH_TOKEN") != ""
+}
+
+// envValue reads one KEY=VALUE line. It only needs empty vs. non-empty, so
+// it skips backslash-escape handling. (by claude)
+func envValue(env, key string) string {
+	for _, line := range strings.Split(env, "\n") {
+		name, value, found := strings.Cut(strings.TrimSpace(line), "=")
+		if !found || strings.TrimSpace(name) != key {
+			continue
+		}
+		value = strings.TrimSpace(value)
+		if len(value) >= 2 && (value[0] == '"' || value[0] == '\'') && value[len(value)-1] == value[0] {
+			value = value[1 : len(value)-1]
+		}
+		return strings.TrimSpace(value)
+	}
+	return ""
+}
+
+// reinstallCLI re-fetches install.sh with none of the automated-setup
+// variables set, so it only installs the CLI binaries -- no enrollment
+// token spent, unlike enroll(). (by claude)
+func (r *reconciler) reinstallCLI(ctx context.Context, cfg Config) error {
+	command := fmt.Sprintf("curl -fsSL %s | sudo sh", shellQuote(cfg.ThunderInstallURL))
+	if err := r.runner.RunShell(ctx, "thunder cli reinstall", command); err != nil {
+		return fmt.Errorf("reinstall thunder cli: %w", err)
+	}
+	log.Printf("thunder CLI reinstalled on node %s (no enrollment token spent)", cfg.Node)
+	return nil
+}
+
+// sweepDanglingSymlinkBases are the two systemd unit directories the sweep
+// checks, each for its .wants and .requires subdirectories -- the same set
+// the sweep has always covered. (by claude)
+var sweepDanglingSymlinkBases = []string{"/etc/systemd/system", "/run/systemd/system"}
+
+// danglingThunderdSymlinks finds exact "thunderd.service" entries under
+// hostRoot's .wants/.requires directories that are symlinks whose target no
+// longer exists -- never a broad pattern match, which could catch a live
+// alias. Detection reads the host through hostRoot (the daemon's read-only
+// /host mount); returned paths are the real host paths, not
+// hostRoot-prefixed, for the runner to act on directly. (by claude)
+func danglingThunderdSymlinks(hostRoot string) ([]string, error) {
+	var dangling []string
+	for _, base := range sweepDanglingSymlinkBases {
+		for _, suffix := range []string{".wants", ".requires"} {
+			pattern := resolveNodePath(hostRoot, base) + "/*" + suffix
+			dirs, err := filepath.Glob(pattern)
+			if err != nil {
+				return nil, fmt.Errorf("glob %s: %w", pattern, err)
+			}
+			for _, dir := range dirs {
+				resolved := filepath.Join(dir, "thunderd.service")
+				info, err := os.Lstat(resolved)
+				if err != nil || info.Mode()&os.ModeSymlink == 0 {
+					continue
+				}
+				target, err := os.Readlink(resolved)
+				if err != nil {
+					continue
+				}
+				// Absolute targets must be resolved in the host namespace, not
+				// the container root. Relative targets stay under hostRoot.
+				if filepath.IsAbs(target) {
+					target = resolveNodePath(hostRoot, target)
+				} else {
+					target = filepath.Join(dir, target)
+				}
+				if _, err := os.Stat(target); err == nil || !errors.Is(err, fs.ErrNotExist) {
+					continue
+				}
+				dangling = append(dangling, filepath.Join(base, filepath.Base(dir), "thunderd.service"))
+			}
+		}
+	}
+	return dangling, nil
+}
+
+// sweepDanglingSymlinks removes any dangling thunderd.service entries found
+// and reloads systemd if it removed anything. Only plain commands run
+// through the runner -- no shell script. (by claude)
+func (r *reconciler) sweepDanglingSymlinks(ctx context.Context, cfg Config) error {
+	dangling, err := danglingThunderdSymlinks(cfg.HostRoot)
+	if err != nil {
+		return fmt.Errorf("find dangling thunderd symlinks: %w", err)
+	}
+	if len(dangling) == 0 {
+		return nil
+	}
+	if output, err := r.runner.CombinedOutput(ctx, "rm", append([]string{"-f"}, dangling...)...); err != nil {
+		return fmt.Errorf("remove dangling thunderd symlinks: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	if output, err := r.runner.CombinedOutput(ctx, "systemctl", "daemon-reload"); err != nil {
+		return fmt.Errorf("systemctl daemon-reload: %w: %s", err, strings.TrimSpace(string(output)))
+	}
 	return nil
 }
 
@@ -264,6 +407,31 @@ func (r *reconciler) restart(ctx context.Context, cfg Config) error {
 		return fmt.Errorf("run thunder up: %w", err)
 	}
 	log.Printf("thunderd restarted on node %s", cfg.Node)
+	return nil
+}
+
+// update installs the thunderd build distribution currently serves. Unlike
+// restart's `thunder up`, `thunder update` replaces an existing binary, so
+// it is what a checksum-triggered retry runs instead. (by claude)
+func (r *reconciler) update(ctx context.Context, cfg Config) error {
+	command := strings.Join([]string{thunderdTransientEnv, "thunder", "update"}, " ")
+	if err := r.runner.RunShell(ctx, "thunder update", command); err != nil {
+		return fmt.Errorf("run thunder update: %w", err)
+	}
+	log.Printf("thunderd updated on node %s", cfg.Node)
+	return nil
+}
+
+// rollbackThunderd is tried once after an update-triggered retry round
+// itself exhausts the budget. Today's CLI has no --rollback flag, so this
+// normally fails; the caller logs that and gives up anyway -- no retry
+// loop around it. (by claude)
+func (r *reconciler) rollbackThunderd(ctx context.Context, cfg Config) error {
+	command := strings.Join([]string{thunderdTransientEnv, "thunder", "update", "--rollback"}, " ")
+	if err := r.runner.RunShell(ctx, "thunder update rollback", command); err != nil {
+		return fmt.Errorf("run thunder update --rollback: %w", err)
+	}
+	log.Printf("thunderd rolled back on node %s", cfg.Node)
 	return nil
 }
 

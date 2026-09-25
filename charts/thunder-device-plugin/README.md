@@ -176,12 +176,39 @@ re-enroll.
 | `daemon.image.repository` | string | `ghcr.io/thunder-compute/thunder-device-plugin/daemon` | Daemon image |
 | `daemon.image.tag` | string | `""` | Daemon image tag; CI records the published source-commit tag before release |
 | `daemon.image.pullPolicy` | string | `IfNotPresent` | Daemon image pull policy |
+| `daemon.extraEnv` | list | `[]` | Additional Kubernetes EnvVar entries for the daemon container; use `valueFrom` for secrets |
 | `daemon.podAnnotations` | object | `{}` | Annotations for daemon pods |
 | `daemon.podLabels` | object | `{}` | Labels for daemon pods |
 | `daemon.nodeSelector` | object | `{}` | Additional node selector for daemon pods |
 | `daemon.tolerations` | list | `[]` | Tolerations for daemon pods |
 | `daemon.affinity` | object | `{}` | Additional affinity for daemon pods |
 | `daemon.resources` | object | `{}` | Resources for the daemon container |
+
+To persist arbitrary thunderd settings, pass environment variables named
+`THUNDERD_ENV_<key>`. The daemon strips the prefix and writes `<key>=<value>`
+to `/etc/thunder/thunderd.env` on the host once at daemon startup, before enrollment or repair.
+It preserves unrelated settings and skips writes when the file already matches.
+It does not restart any service; settings apply when thunderd next starts.
+
+Values are read at daemon startup, so restart the daemon pods after changing
+these environment variables or their referenced Secrets. Removing a variable
+leaves its saved setting in place; an explicit empty value writes an empty setting.
+Keys must be valid environment variable names (`[A-Za-z_][A-Za-z0-9_]*`).
+Configuration failures are logged without blocking DRA startup; they are not retried.
+A Helm upgrade that changes `daemon.extraEnv` rolls out new daemon pods. Updating
+only a referenced Secret does not trigger a rollout.
+
+```yaml
+daemon:
+  extraEnv:
+    - name: THUNDERD_ENV_LOG_LEVEL
+      value: debug
+    - name: THUNDERD_ENV_API_TOKEN
+      valueFrom:
+        secretKeyRef:
+          name: thunderd-settings
+          key: api-token
+```
 
 ### Node labels
 

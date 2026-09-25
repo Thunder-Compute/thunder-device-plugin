@@ -36,7 +36,7 @@ operator:
     # -- Repository for the operator image.
     repository: ghcr.io/thunder-compute/thunder-device-plugin/operator
     # -- Tag for the operator image. CI records the published source-commit tag here before release.
-    tag: "0f01656b662516c3da790dd5e3072c1b12114b6c"
+    tag: "e7c89810ae48ed1a4e39ff75faf93e8a2a80e99c"
     # -- Pull policy for the operator image. (Options: "Always", "IfNotPresent", "Never")
     pullPolicy: IfNotPresent
   # -- How often Thunder inventory is polled. New GPU models and capacity changes appear within this interval.
@@ -65,9 +65,17 @@ daemon:
     # -- Repository for the node daemon image.
     repository: ghcr.io/thunder-compute/thunder-device-plugin/daemon
     # -- Tag for the node daemon image. CI records the published source-commit tag here before release.
-    tag: "0f01656b662516c3da790dd5e3072c1b12114b6c"
+    tag: "e7c89810ae48ed1a4e39ff75faf93e8a2a80e99c"
     # -- Pull policy for the node daemon image. (Options: "Always", "IfNotPresent", "Never")
     pullPolicy: IfNotPresent
+  # -- Additional environment variables for the daemon container, using Kubernetes EnvVar entries. Use valueFrom for secrets.
+  extraEnv: []
+  # THUNDERD_ENV_<key> writes <key> to /etc/thunder/thunderd.env once at
+  # daemon startup, without restarting thunderd. Undefined keys are untouched.
+  # Uncommenting an empty value explicitly clears that setting:
+  # extraEnv:
+  #   - name: THUNDERD_ENV_POSTHOG_API_TOKEN
+  #     value: ""
   # -- Annotations added to daemon pods.
   podAnnotations: {}
   # -- Labels added to daemon pods.

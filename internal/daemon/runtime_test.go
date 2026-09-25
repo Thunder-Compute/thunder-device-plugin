@@ -519,6 +519,10 @@ func (r *fakeRunner) RunShell(_ context.Context, _ string, command string) error
 	return nil
 }
 
+func (r *fakeRunner) RunShellInput(ctx context.Context, label string, command string, _ string) error {
+	return r.RunShell(ctx, label, command)
+}
+
 // Stream blocks like a real follow would, so a test that starts the daemon
 // does not spin restarting the log stream.
 func (r *fakeRunner) Stream(ctx context.Context, _ func(string), _ string, _ ...string) error {

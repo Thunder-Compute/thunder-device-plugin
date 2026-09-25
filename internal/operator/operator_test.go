@@ -98,6 +98,51 @@ func TestBuildDesiredPoolsUsesMaxHostAndClientCapacity(t *testing.T) {
 	}
 }
 
+func TestBuildDesiredPoolsExcludesCordonedHostCapacity(t *testing.T) {
+	inventory := &fakeInventory{
+		zones: []thunder.Zone{{ZoneID: "zone-1", DisplayName: "us-west-2a"}},
+		nodes: map[string][]thunder.Server{
+			"zone-1": {
+				{ServerID: "available", GPUType: "A6000", GPUCount: 4, Status: "active"},
+				{ServerID: "cordoned", GPUType: "A6000", GPUCount: 8, Status: "active", Configurations: thunder.ServerConfigurations{Cordoned: true}},
+			},
+		},
+		clients: map[string][]thunder.RegisteredClient{},
+	}
+
+	pools, err := buildDesiredPools(context.Background(), inventory, nil)
+	if err != nil {
+		t.Fatalf("buildDesiredPools returned error: %v", err)
+	}
+
+	a6000 := pools[poolKey{Zone: "us-west-2a", GPUType: "a6000"}]
+	if a6000.HostCapacity != 4 || a6000.Capacity != 4 {
+		t.Fatalf("cordoned server contributed capacity: %#v", a6000)
+	}
+}
+
+func TestBuildDesiredPoolsKeepsLiveClientsWhenEveryHostIsCordoned(t *testing.T) {
+	inventory := &fakeInventory{
+		zones: []thunder.Zone{{ZoneID: "zone-1", DisplayName: "us-west-2a"}},
+		nodes: map[string][]thunder.Server{
+			"zone-1": {{ServerID: "cordoned", GPUType: "A6000", GPUCount: 8, Status: "active", Configurations: thunder.ServerConfigurations{Cordoned: true}}},
+		},
+		clients: map[string][]thunder.RegisteredClient{
+			"zone-1": {{ClientID: "running", GPUType: "A6000", GPUCount: 2}},
+		},
+	}
+
+	pools, err := buildDesiredPools(context.Background(), inventory, nil)
+	if err != nil {
+		t.Fatalf("buildDesiredPools returned error: %v", err)
+	}
+
+	a6000 := pools[poolKey{Zone: "us-west-2a", GPUType: "a6000"}]
+	if a6000.HostCapacity != 0 || a6000.ClientCapacity != 2 || a6000.Capacity != 2 {
+		t.Fatalf("live-client floor was not preserved: %#v", a6000)
+	}
+}
+
 func TestSyncCreatesUpdatesAndDeletesResourceSlices(t *testing.T) {
 	ctx := context.Background()
 	inventory := &fakeInventory{
@@ -151,6 +196,46 @@ func TestSyncCreatesUpdatesAndDeletesResourceSlices(t *testing.T) {
 	}
 	if len(list.Items) != 0 {
 		t.Fatalf("ResourceSlices remaining after capacity disappeared = %d, want 0", len(list.Items))
+	}
+}
+
+func TestSyncRemovesAndRestoresCordonedCapacity(t *testing.T) {
+	ctx := context.Background()
+	inventory := &fakeInventory{
+		zones: []thunder.Zone{{ZoneID: "zone-1", DisplayName: "us-west-2a"}},
+		nodes: map[string][]thunder.Server{
+			"zone-1": {{ServerID: "server-1", GPUType: "A6000", GPUCount: 4, Status: "active"}},
+		},
+		clients: map[string][]thunder.RegisteredClient{},
+	}
+	kube := fake.NewSimpleClientset()
+	op := New(testConfig(), kube, nil, inventory, nil)
+
+	if err := op.Sync(ctx); err != nil {
+		t.Fatalf("initial Sync returned error: %v", err)
+	}
+	if got := gpuCapacity(t, getOnlyResourceSlice(t, kube)); got != 4 {
+		t.Fatalf("initial capacity = %d, want 4", got)
+	}
+
+	inventory.nodes["zone-1"][0].Configurations.Cordoned = true
+	if err := op.Sync(ctx); err != nil {
+		t.Fatalf("cordon Sync returned error: %v", err)
+	}
+	list, err := kube.ResourceV1().ResourceSlices().List(ctx, metav1.ListOptions{})
+	if err != nil {
+		t.Fatalf("list cordoned ResourceSlices: %v", err)
+	}
+	if len(list.Items) != 0 {
+		t.Fatalf("cordoned ResourceSlice count = %d, want 0", len(list.Items))
+	}
+
+	inventory.nodes["zone-1"][0].Configurations.Cordoned = false
+	if err := op.Sync(ctx); err != nil {
+		t.Fatalf("uncordon Sync returned error: %v", err)
+	}
+	if got := gpuCapacity(t, getOnlyResourceSlice(t, kube)); got != 4 {
+		t.Fatalf("restored capacity = %d, want 4", got)
 	}
 }
 
