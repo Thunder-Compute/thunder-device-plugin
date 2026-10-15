@@ -368,6 +368,15 @@ fails the operator logs a warning and assumes `1` rather than failing inventory.
 A claim always gets whole GPUs; sharing is expressed by how many the zone
 publishes.
 
+Before the kubelet prepares a newly scheduled claim, the node plugin blocks on a
+fresh Thunder inventory query and reconciles that claim's ResourceSlice pool. It
+then verifies that every device assigned by the scheduler still exists. If
+out-of-cluster demand shrank the pool past the assigned device, or if the
+central query fails, preparation fails closed before an enrollment token or CDI
+state is created. Kubelet retries can succeed after capacity returns. Claims
+that are already prepared skip this refresh so an idempotent retry cannot
+disrupt a running workload.
+
 ```bash
 kubectl get resourceslices -l app.kubernetes.io/name=thunder-dra-driver \
   -o custom-columns=POOL:.spec.pool.name,TARGET:'.metadata.labels.thundercompute\.com/oversubscription'
@@ -540,6 +549,7 @@ Details in [`hack/README.md`](hack/README.md).
 | Pod stuck `ContainerCreating` | Daemon failing to prepare | `kubectl -n thunder-system logs -l app.kubernetes.io/component=daemon` |
 | Unknown resource name | Model not enrolled, or name misspelled | `kubectl get deviceclasses -l app.kubernetes.io/name=thunder-dra-driver` |
 | Pool bigger than the GPU count | Zone oversubscription target above 1 | See [Oversubscription](#oversubscription) |
+| Pod remains unprepared after allocation | Blocking central refresh failed or removed its stale device | Check daemon logs and current ResourceSlices |
 | Daemon will not start | No zone label, or no node IP | `kubectl get node <node> -o wide` |
 | VM boots without a GPU | Guest artifacts not mounted | `kubectl get cm,secret \| grep <claim-name>-thunder` |
 | Client resource stuck `Terminating` | Its `ResourceClaim` still exists; the finalizer holds it until the enrollment is revoked | `kubectl get clients.thundercompute.com -A -o wide` |
