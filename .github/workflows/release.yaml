@@ -54,7 +54,7 @@ jobs:
       - name: Verify chart-selected images
         run: make verify-chart-images
 
-      - uses: azure/setup-helm@v4
+      - uses: azure/setup-helm@v5
         with:
           version: ${{ env.HELM_VERSION }}
 
