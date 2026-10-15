@@ -19,6 +19,8 @@ import (
 	"k8s.io/dynamic-resource-allocation/kubeletplugin"
 
 	thunder "github.com/Thunder-Compute/thunder-sdk"
+
+	"github.com/Thunder-Compute/thunder-device-plugin/internal/hostartifacts"
 )
 
 // thunderDomain qualifies every resource, attribute and label the driver owns.
@@ -60,6 +62,8 @@ type Allocation struct {
 	Zone     string
 	GPUType  string
 	GPUCount int64
+
+	HostArtifactProfile hostartifacts.Profile
 }
 
 // AllocatedDevice is one GPU the scheduler assigned to a claim.
@@ -136,14 +140,15 @@ type GuestConfigStore interface {
 }
 
 type Driver struct {
-	DriverName string
-	NodeName   string
-	Kube       kubernetes.Interface
-	Tokens     TokenIssuer
-	Clients    ThunderClientStore
-	CDI        CDIDeviceStore
-	Guest      GuestConfigStore
-	Logger     *slog.Logger
+	DriverName                 string
+	NodeName                   string
+	DefaultHostArtifactProfile hostartifacts.Profile
+	Kube                       kubernetes.Interface
+	Tokens                     TokenIssuer
+	Clients                    ThunderClientStore
+	CDI                        CDIDeviceStore
+	Guest                      GuestConfigStore
+	Logger                     *slog.Logger
 }
 
 var _ kubeletplugin.DRAPlugin = (*Driver)(nil)
@@ -337,6 +342,9 @@ func (d *Driver) decodeAllocation(ctx context.Context, claim *resourcev1.Resourc
 	allocation.PoolName = first.PoolName
 	allocation.DeviceName = first.DeviceName
 	allocation.ShareID = first.ShareID
+	if err := d.resolveHostArtifactProfile(&allocation, claim.Status.Allocation.Devices.Config); err != nil {
+		return Allocation{}, err
+	}
 	return allocation, nil
 }
 

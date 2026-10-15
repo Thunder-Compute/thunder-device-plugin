@@ -3,12 +3,15 @@ package operator
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"strings"
 
 	resourcev1 "k8s.io/api/resource/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
+
+	"github.com/Thunder-Compute/thunder-device-plugin/internal/hostartifacts"
 )
 
 const deviceClassComponent = "device-class"
@@ -43,6 +46,9 @@ func buildDeviceClass(cfg Config, gpuType string) *resourcev1.DeviceClass {
 			},
 		},
 		Spec: resourcev1.DeviceClassSpec{
+			Config: []resourcev1.DeviceClassConfiguration{{
+				DeviceConfiguration: hostartifacts.DeviceConfiguration(cfg.DriverName, cfg.DefaultHostArtifactProfile),
+			}},
 			ExtendedResourceName: &extendedResource,
 			Selectors: []resourcev1.DeviceSelector{
 				{
@@ -147,6 +153,9 @@ func (o *Operator) listManagedDeviceClasses(ctx context.Context) (map[string]*re
 }
 
 func sameDeviceClass(current, wanted *resourcev1.DeviceClass) bool {
+	if !reflect.DeepEqual(current.Spec.Config, wanted.Spec.Config) {
+		return false
+	}
 	if derefString(current.Spec.ExtendedResourceName) != derefString(wanted.Spec.ExtendedResourceName) {
 		return false
 	}
