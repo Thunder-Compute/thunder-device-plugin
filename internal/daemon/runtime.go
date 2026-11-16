@@ -40,16 +40,25 @@ func run(ctx context.Context, cfg Config, runner commandRunner, nodes nodeInfoRe
 	client := thunder.NewClient(cfg.ThunderAPIURL, cfg.ThunderAPIToken,
 		thunder.WithUserAgent(version.UserAgent("daemon")),
 		thunder.WithInstallURL(cfg.ThunderInstallURL))
+	// The node enrollment command names the Central thunderd will use, which
+	// can be an address only the node reaches. It builds a command and makes
+	// no API calls, so it needs no token.
+	var enrollmentCommands *thunder.Client
+	if cfg.ThunderdCentralURL != "" {
+		enrollmentCommands = thunder.NewClient(cfg.ThunderdCentralURL, "",
+			thunder.WithInstallURL(cfg.ThunderInstallURL))
+	}
 
 	// Node enrollment and health are driven by the reconcile loop, so the
 	// daemon recovers on its own when
 	// thunderd is removed, reinstalled or restarted underneath it.
 	reconciler := &reconciler{
-		cfg:         cfg,
-		runner:      runner,
-		nodes:       nodes,
-		client:      client,
-		startPlugin: startDRAPlugin,
+		cfg:                cfg,
+		runner:             runner,
+		nodes:              nodes,
+		client:             client,
+		enrollmentCommands: enrollmentCommands,
+		startPlugin:        startDRAPlugin,
 	}
 	return reconciler.loop(ctx, ThunderReconcileInterval, ThunderReconcileMaxBackoff)
 }

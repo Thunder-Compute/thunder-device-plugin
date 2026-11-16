@@ -106,6 +106,7 @@ typos and wrong types fail at install time rather than silently doing nothing.
 | --- | --- | --- | --- |
 | `thunder.secretName` | string | `thunder-api` | Existing Secret holding the API token under `THUNDER_API_TOKEN`. Must exist before install |
 | `thunder.apiURL` | string | `https://registry.thundercompute.com` | Thunder API endpoint |
+| `thunder.thunderdCentralURL` | string | `""` | Central URL thunderd on each node is enrolled with, when it should differ from apiURL, such as an address only the node itself can reach (a pinned cluster IP), which containers given apiURL cannot. Already-enrolled nodes move to it on their next thunderd restart by the daemon, or with `sudo thunder set central-url <url>`. Empty uses apiURL. |
 | `thunder.artifactBaseURL` | string | `https://get.thundercompute.com` | Host the Thunder client artifacts are downloaded from. The daemon fetches `libthunder.so` from here and stages it into every container that claims a GPU. Point at a staging artifact host to run unreleased client builds. |
 | `thunder.installURL` | string | `""` | Installer the daemon reads the pinned libthunder.so digest out of. It is read, never executed. Empty derives it as `<artifactBaseURL>/install.sh`. |
 | `thunder.telemetryURL` | string | `https://telemetry.thundercompute.com:2096` | Telemetry collector written into each container's Thunder client config. |

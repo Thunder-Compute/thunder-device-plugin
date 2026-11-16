@@ -139,6 +139,11 @@
           "type": "string",
           "pattern": "^https?://"
         },
+        "thunderdCentralURL": {
+          "type": "string",
+          "pattern": "^(https?://.+)?$",
+          "description": "Central URL thunderd is enrolled with when it differs from apiURL. Empty uses apiURL."
+        },
         "telemetryURL": {
           "type": "string",
           "pattern": "^https?://",

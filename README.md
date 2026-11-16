@@ -455,6 +455,7 @@ misspelled `--set` key fails the install.
 | --- | --- | --- |
 | `thunder.secretName` | `thunder-api` | Existing Secret holding `THUNDER_API_TOKEN` |
 | `thunder.apiURL` | `https://registry.thundercompute.com` | Thunder API endpoint |
+| `thunder.thunderdCentralURL` | `""` | Central URL thunderd is enrolled with, when it differs from `apiURL` (for example a cluster IP only the node can reach). Empty uses `apiURL` |
 | `thunder.artifactBaseURL` | `https://get.thundercompute.com` | Where the Thunder client library is downloaded from |
 | `thunder.telemetryURL` | `https://telemetry.thundercompute.com:2096` | Telemetry collector written into each container's client config |
 | `operator.extendedResourcePrefix` | `thundercompute.com/gpu-` | Prefix for per-model extended resources; `""` for clusters below 1.36 |

@@ -13,6 +13,7 @@ const (
 	EnvAdvertisedIP        = "ADVERTISED_IP"
 	EnvMinNVDriverVersion  = "MIN_DRIVER_VERSION"
 	EnvThunderAPIURL       = "THUNDER_API_URL"
+	EnvThunderdCentralURL  = "THUNDERD_CENTRAL_URL"
 	EnvThunderPortRange    = "THUNDER_PORT_RANGE"
 	EnvThunderAPIToken     = "THUNDER_API_TOKEN"
 	EnvThunderdPrefix      = "THUNDERD_ENV_"
@@ -78,8 +79,13 @@ type Config struct {
 	// passed to the installer at enrollment. Empty leaves the installer's own
 	// default in place. Operators should choose a range that clears both the
 	// cluster's NodePort range and the kernel's ephemeral range. (by claude)
-	PortRange           string
-	ThunderAPIURL       string
+	PortRange     string
+	ThunderAPIURL string
+	// ThunderdCentralURL is the Central URL thunderd is enrolled and restarted
+	// with, when it should differ from ThunderAPIURL: for example an address
+	// only the node itself can reach, such as a pinned cluster IP, which the
+	// containers that get ThunderAPIURL cannot. Empty uses ThunderAPIURL.
+	ThunderdCentralURL  string
 	ThunderAPIToken     string
 	ThunderdEnv         map[string]string
 	HostRoot            string
@@ -152,6 +158,7 @@ func configFromLookup(lookup func(string) (string, bool)) (Config, error) {
 		MinDriverVersion:    minVersion,
 		PortRange:           portRange,
 		ThunderAPIURL:       optionalEnv(lookup, EnvThunderAPIURL, ""),
+		ThunderdCentralURL:  optionalEnv(lookup, EnvThunderdCentralURL, ""),
 		ThunderAPIToken:     apiToken,
 		HostRoot:            optionalEnv(lookup, EnvHostRoot, DefaultHostRoot),
 		LibCUDAPath:         optionalEnv(lookup, EnvLibCUDAPath, DefaultLibCUDAPath),

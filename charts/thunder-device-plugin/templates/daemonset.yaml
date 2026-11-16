@@ -46,6 +46,10 @@ spec:
               value: {{ .Values.node.advertisedIPLabel | quote }}
             - name: THUNDER_API_URL
               value: {{ .Values.thunder.apiURL | quote }}
+            {{- with .Values.thunder.thunderdCentralURL }}
+            - name: THUNDERD_CENTRAL_URL
+              value: {{ . | quote }}
+            {{- end }}
             - name: THUNDER_TELEMETRY_URL
               value: {{ .Values.thunder.telemetryURL | quote }}
             - name: THUNDER_ARTIFACT_BASE_URL

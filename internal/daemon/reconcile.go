@@ -55,6 +55,10 @@ type reconciler struct {
 	runner commandRunner
 	nodes  nodeInfoReader
 	client *thunder.Client
+	// enrollmentCommands builds the node enrollment command when thunderd's
+	// Central URL differs from the API URL (Config.ThunderdCentralURL); nil
+	// uses client.
+	enrollmentCommands *thunder.Client
 
 	// startPlugin is a field so tests can exercise the loop without an
 	// in-cluster kubelet.
@@ -397,12 +401,18 @@ func (r *reconciler) logStatus(cfg Config, status thunderStatus, statusErr error
 // and no enrollment token, because the auth token thunderd saved when it
 // enrolled is still the one Thunder issued this node.
 func (r *reconciler) restart(ctx context.Context, cfg Config) error {
-	command := strings.Join([]string{
+	args := []string{
 		thunderdTransientEnv, "thunder", "up",
 		"--ip", shellQuote(cfg.AdvertisedIP),
 		"--zone", shellQuote(cfg.Zone),
 		"--node-name", shellQuote(cfg.Node),
-	}, " ")
+	}
+	// `thunder up` persists the URL, so a node enrolled against another one
+	// moves to it on its next restart.
+	if cfg.ThunderdCentralURL != "" {
+		args = append(args, "--central-url", shellQuote(cfg.ThunderdCentralURL))
+	}
+	command := strings.Join(args, " ")
 	if err := r.runner.RunShell(ctx, "thunder up", command); err != nil {
 		return fmt.Errorf("run thunder up: %w", err)
 	}
@@ -462,7 +472,11 @@ func (r *reconciler) enroll(ctx context.Context, cfg Config) error {
 		return fmt.Errorf("create thunder node enrollment: %w", err)
 	}
 
-	command, err := withTransientThunderd(r.client.ServerEnrollmentCommand(thunder.ServerEnrollmentCommandRequest{
+	commands := r.client
+	if r.enrollmentCommands != nil {
+		commands = r.enrollmentCommands
+	}
+	command, err := withTransientThunderd(commands.ServerEnrollmentCommand(thunder.ServerEnrollmentCommandRequest{
 		EnrollmentToken: token.EnrollmentToken,
 		IP:              cfg.AdvertisedIP,
 		Zone:            cfg.Zone,

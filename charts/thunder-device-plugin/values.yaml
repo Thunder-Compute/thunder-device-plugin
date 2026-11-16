@@ -18,6 +18,8 @@ thunder:
   secretName: thunder-api
   # -- Thunder API endpoint.
   apiURL: "https://registry.thundercompute.com"
+  # -- Central URL thunderd on each node is enrolled with, when it should differ from apiURL, such as an address only the node itself can reach (a pinned cluster IP), which containers given apiURL cannot. Already-enrolled nodes move to it on their next thunderd restart by the daemon, or with `sudo thunder set central-url <url>`. Empty uses apiURL.
+  thunderdCentralURL: ""
   # -- Telemetry collector written into each container's Thunder client config. Set to the staging collector when apiURL points at staging.
   telemetryURL: "https://telemetry.thundercompute.com:2096"
   # -- Host the Thunder client artifacts are downloaded from. The daemon fetches `libthunder.so` from here and stages it into every container that claims a GPU. Point at a staging artifact host to run unreleased client builds.
